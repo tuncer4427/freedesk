@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: freedesk-release
+  cancel-in-progress: true
+
 env:
   SCITER_RUST_VERSION: "1.75"
   MAC_RUST_VERSION: "1.81"
