@@ -3,13 +3,14 @@ name: FreeDesk release
 # Builds the Windows (.exe) and macOS (.dmg) apps and publishes them as a
 # GitHub release. The apps check that release for updates.
 #
-# Trigger: push a tag that equals the version in Cargo.toml, e.g. `1.5.3`.
+# Trigger: push the commit to release to the `release` branch
+# (`git push origin main:release`). The release tag is created from VERSION.
 # Adapted from RustDesk's flutter-build.yml (Windows x64 + macOS jobs only).
 
 on:
   push:
-    tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
+    branches:
+      - release
   workflow_dispatch:
 
 permissions:
@@ -470,6 +471,7 @@ jobs:
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           tag_name: ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
           name: FreeDesk ${{ env.VERSION }}
           prerelease: false
           fail_on_unmatched_files: true

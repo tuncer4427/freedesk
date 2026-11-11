@@ -16,8 +16,8 @@ Son sürüm: [Releases](https://github.com/tuncer4427/freedesk/releases/latest)
 
 1. Sürüm numarasını dört yerde yükseltin: `Cargo.toml`, `libs/portable/Cargo.toml`,
    `flutter/pubspec.yaml` ve `.github/workflows/freedesk-release.yml` (`VERSION`).
-2. Değişikliği `main` dalına gönderin ve sürümle aynı adda bir etiket (tag) oluşturun,
-   örneğin `1.5.4`.
+2. Değişikliği `main` dalına gönderin, sonra aynı commit'i `release` dalına gönderin
+   (`git push origin main:release`).
 3. GitHub Actions kurulum dosyalarını derler ve sürümü yayınlar; kurulu programlar
    yeni sürümü buradan bulur.
 
