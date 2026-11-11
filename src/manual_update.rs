@@ -5,7 +5,7 @@ use hbb_common::{
 use std::{io::Read, path::Path};
 
 const UPDATE_SIDECAR_MAX_BYTES: u64 = 1024 * 1024;
-const PUBLIC_MACOS_BUNDLE_ID: &str = "com.carriez.rustdesk";
+const PUBLIC_MACOS_BUNDLE_ID: &str = "com.freedesk.app";
 const MACOS_UPDATE_USAGE: &str = "Usage: --update [update.dmg --metadata rustdesk-update.json --signature rustdesk-update.json.sig]";
 const LEGACY_UPDATE_WARNING: &str =
     "legacy offline update: signed metadata not found; release hash was not verified";
