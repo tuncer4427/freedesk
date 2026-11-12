@@ -12,4 +12,5 @@ contextBridge.exposeInMainWorld('freedesk', {
   onClipboard: (callback) => ipcRenderer.on('clipboard:changed', (_event, text) => callback(text)),
   onUpdate: (callback) => ipcRenderer.on('update:status', (_event, status) => callback(status)),
   installUpdate: () => ipcRenderer.send('update:install'),
+  checkUpdate: () => ipcRenderer.invoke('update:check'),
 });

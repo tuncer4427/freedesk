@@ -19,6 +19,7 @@ let mainWindow = null;
 let hosting = false;
 let clipboardTimer = null;
 let lastClipboardText = '';
+let updater = null;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -46,7 +47,7 @@ function createWindow() {
     height: 680,
     minWidth: 720,
     minHeight: 520,
-    backgroundColor: '#0f1720',
+    backgroundColor: '#f4f6f8',
     title: 'FreeDesk Beta',
     autoHideMenuBar: true,
     webPreferences: {
@@ -108,6 +109,7 @@ function setupUpdates() {
     if (canSelfUpdate) autoUpdater.quitAndInstall(true, true);
     else shell.openExternal(DOWNLOAD_PAGE);
   });
+  updater = autoUpdater;
   const check = () => autoUpdater.checkForUpdates().catch((err) => console.error('update check failed:', err.message));
   check();
   setInterval(check, UPDATE_CHECK_INTERVAL_MS);
@@ -124,6 +126,21 @@ function setupIpc(deviceKey) {
     inputAvailable: input.available(),
     inputError: input.loadError(),
   }));
+
+  ipcMain.handle('update:check', async () => {
+    if (!updater) return { state: 'unavailable' };
+    try {
+      const result = await updater.checkForUpdates();
+      const version = result && result.updateInfo ? result.updateInfo.version : null;
+      const available =
+        result && typeof result.isUpdateAvailable === 'boolean'
+          ? result.isUpdateAvailable
+          : Boolean(version) && version !== app.getVersion();
+      return available ? { state: 'available', version } : { state: 'current' };
+    } catch {
+      return { state: 'error' };
+    }
+  });
 
   ipcMain.handle('host:permissions', (_event, prompt) => {
     if (process.platform !== 'darwin') return { screen: true, control: true };
