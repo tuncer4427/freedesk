@@ -5,7 +5,6 @@ contextBridge.exposeInMainWorld('freedesk', {
   info: () => ipcRenderer.invoke('app:info'),
   permissions: (prompt) => ipcRenderer.invoke('host:permissions', prompt),
   openSettings: (which) => ipcRenderer.invoke('host:open-settings', which),
-  screenSource: () => ipcRenderer.invoke('host:source'),
   setHosting: (active) => ipcRenderer.send('host:session', active),
   input: (msg) => ipcRenderer.send('host:input', msg),
   syncClipboard: (active) => ipcRenderer.send('clipboard:sync', active),

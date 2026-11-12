@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, screen, shell, systemPreferences } = require('electron');
+const { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, screen, session, shell, systemPreferences } = require('electron');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -139,12 +139,18 @@ function setupIpc(deviceKey) {
     return shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
   });
 
-  ipcMain.handle('host:source', async () => {
-    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
-    if (sources.length === 0) throw new Error('no screen available');
-    const primary = screen.getPrimaryDisplay();
-    const source = sources.find((s) => s.display_id === String(primary.id)) || sources[0];
-    return { sourceId: source.id };
+  // The page asks for the screen with getDisplayMedia; the primary display is
+  // handed over without a picker because the user already approved the session.
+  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer
+      .getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
+      .then((sources) => {
+        const primary = screen.getPrimaryDisplay();
+        const source = sources.find((s) => s.display_id === String(primary.id)) || sources[0];
+        if (source) callback({ video: source });
+        else callback({});
+      })
+      .catch(() => callback({}));
   });
 
   ipcMain.on('host:session', (_event, active) => {

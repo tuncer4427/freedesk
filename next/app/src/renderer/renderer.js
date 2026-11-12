@@ -7,8 +7,10 @@ const api = window.freedesk;
 
 const RECONNECT_MS = 3000;
 const MAX_BITRATE = 12 * 1000 * 1000;
-const MAX_FRAMERATE = 30;
-const MOVE_INTERVAL_MS = 16;
+const MAX_FRAMERATE = 60;
+const MOVE_INTERVAL_MS = 8;
+const RECENT_KEY = 'freedesk.recent';
+const MAX_RECENT = 6;
 
 let info = null;
 let socket = null;
@@ -231,10 +233,9 @@ async function startHost(msg) {
   // The viewer's offer can arrive while the screen capture is still starting.
   starting = { sessionId, signals: [] };
   try {
-    const { sourceId } = await api.screenSource();
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getDisplayMedia({
       audio: false,
-      video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId, maxFrameRate: MAX_FRAMERATE } },
+      video: { frameRate: MAX_FRAMERATE },
     });
     if (!starting || starting.sessionId !== sessionId) {
       // The request was cancelled while the capture was starting.
@@ -263,6 +264,43 @@ async function startHost(msg) {
   }
 }
 
+// --- recently used addresses -------------------------------------------------
+function loadRecent() {
+  try {
+    const list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+    return Array.isArray(list) ? list.filter((id) => /^\d{9}$/.test(id)).slice(0, MAX_RECENT) : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberRecent(id) {
+  const list = [id, ...loadRecent().filter((other) => other !== id)].slice(0, MAX_RECENT);
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+  } catch {}
+  renderRecent();
+}
+
+function renderRecent() {
+  const list = loadRecent();
+  const box = $('recent');
+  box.replaceChildren();
+  $('recent-section').hidden = list.length === 0;
+  for (const id of list) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'recent-item';
+    item.textContent = formatId(id);
+    item.addEventListener('click', () => {
+      $('remote-id').value = formatId(id);
+      $('remote-id').dispatchEvent(new Event('input', { bubbles: true }));
+      $('connect-form').requestSubmit();
+    });
+    box.append(item);
+  }
+}
+
 // --- viewer role -------------------------------------------------------------
 async function startViewer(msg) {
   const { sessionId, to } = pending;
@@ -270,9 +308,12 @@ async function startViewer(msg) {
   setMessage('');
   const pc = createPeer(msg.iceServers);
   session = { role: 'viewer', sessionId, peerId: to, pc, channel: null, stream: null, hostPlatform: null };
+  rememberRecent(to);
   bindChannel(pc.createDataChannel('control', { ordered: true }));
   pc.addTransceiver('video', { direction: 'recvonly' });
   pc.ontrack = (event) => {
+    // Show each frame as soon as it arrives rather than buffering for smoothness.
+    if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0;
     $('screen').srcObject = event.streams[0] || new MediaStream([event.track]);
   };
   $('viewer-title').textContent = formatId(to);
@@ -469,6 +510,7 @@ async function main() {
   api.onClipboard((text) => control({ t: 'clip', text }));
   setupViewerInput();
   setupUpdates();
+  renderRecent();
   refreshPermissions(false);
   window.addEventListener('focus', () => refreshPermissions(false));
   connectServer();
