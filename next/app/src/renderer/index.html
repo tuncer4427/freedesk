@@ -40,10 +40,10 @@
       <button id="permissions-button" class="small">Ayarları aç</button>
     </div>
     <div id="hosting" class="notice danger" hidden>
-      <span><strong id="hosting-peer"></strong> bu bilgisayara bağlı</span>
+      <div id="hosting-list" class="hosting-list"></div>
       <span class="row">
         <button id="hosting-panel" class="small">Sohbet ve dosya</button>
-        <button id="hosting-stop" class="danger small">Bağlantıyı kes</button>
+        <button id="hosting-stop" class="danger small" hidden>Tümünü kes</button>
       </span>
     </div>
 
@@ -91,6 +91,7 @@
         </label>
         <div class="field">
           <span>Çalışma</span>
+          <label class="check"><input id="pref-sounds" type="checkbox"><span>Mesaj ve bağlantı isteği geldiğinde ses çal</span></label>
           <label class="check"><input id="pref-background" type="checkbox"><span>Pencere kapatılınca arka planda çalışmaya devam et</span></label>
           <label class="check"><input id="pref-autostart" type="checkbox"><span>Bilgisayar açılınca FarDesk’i başlat</span></label>
           <small>Bu bilgisayara parola ile bağlanılabilmesi için FarDesk’in çalışıyor olması gerekir. Tamamen kapatmak için sistem tepsisindeki FarDesk simgesinden Çıkış’ı seçin.</small>
@@ -154,6 +155,7 @@
           <label class="check"><input id="pref-control" type="checkbox"><span>Fare ve klavyeyi kontrol edebilsin</span></label>
           <label class="check"><input id="pref-clipboard" type="checkbox"><span>Kopyala-yapıştır (pano) paylaşılsın</span></label>
           <label class="check"><input id="pref-files" type="checkbox"><span>Bu bilgisayara dosya gönderebilsin</span></label>
+          <label class="check"><input id="pref-cursor-name" type="checkbox"><span>Fareyi hareket ettiren kişinin adı imlecin yanında görünsün</span></label>
         </div>
       </section>
       <section class="page" data-page="about" hidden>
@@ -172,6 +174,7 @@
 <section id="viewer" class="view" hidden>
   <div class="toolbar">
     <strong id="viewer-title"></strong>
+    <span id="viewer-ping" class="ping" role="status"></span>
     <span id="viewer-state" class="hint"></span>
     <span class="spacer"></span>
     <select id="viewer-quality" class="small" aria-label="Görüntü kalitesi">
@@ -209,21 +212,10 @@
     <input id="chat-input" type="text" maxlength="2000" autocomplete="off" placeholder="Mesaj yazın" aria-label="Mesaj">
     <button class="primary small" type="submit">Gönder</button>
   </form>
-  <audio id="remote-audio" autoplay></audio>
+  <div id="audios" hidden></div>
 </aside>
 </div>
 
-<div id="request" class="overlay" hidden>
-  <div class="dialog" role="alertdialog" aria-labelledby="request-title">
-    <h2 id="request-title">Bağlantı isteği</h2>
-    <p><strong id="request-from"></strong> <span id="request-name"></span> <span id="request-what"></span></p>
-    <p class="hint">Yalnızca tanıdığınız ve güvendiğiniz kişilerin isteğini kabul edin.</p>
-    <div class="actions">
-      <button id="request-reject">Reddet</button>
-      <button id="request-accept" class="primary">Kabul et</button>
-    </div>
-  </div>
-</div>
 <script src="renderer.js"></script>
 </body>
 </html>

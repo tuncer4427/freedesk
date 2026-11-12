@@ -159,3 +159,28 @@ select, input[type="text"] { color: var(--text); background: var(--surface); bor
 .chat-form { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); }
 .chat-form input { flex: 1; min-width: 0; }
 .badge::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--danger); }
+
+/* connection quality */
+.ping { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.ping:empty { display: none; }
+.ping[data-level="good"] { color: #0c8f72; background: color-mix(in srgb, #0c8f72 14%, var(--surface)); }
+.ping[data-level="warn"] { color: #b45309; background: color-mix(in srgb, #f59e0b 22%, var(--surface)); }
+.ping[data-level="bad"] { color: #fff; background: var(--danger); }
+:root[data-theme="dark"] .ping[data-level="good"] { color: #34d3ae; }
+:root[data-theme="dark"] .ping[data-level="warn"] { color: #fbbf24; }
+
+/* computers connected to this one */
+.hosting-list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.hosting-row { display: flex; align-items: center; gap: 10px; }
+.hosting-row > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bubble-from { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
+
+/* connection request popup window */
+.request-window { background: var(--surface); overflow: hidden; -webkit-app-region: drag; }
+.request-card { height: 100%; padding: 18px 20px; display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--line); border-top: 4px solid var(--accent); }
+.request-card p { line-height: 1.45; }
+.request-card strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.request-head { display: flex; align-items: center; gap: 9px; }
+.request-head h2 { font-size: 16px; flex: 1; }
+.request-card .actions { margin-top: auto; }
+.request-card button { -webkit-app-region: no-drag; }

@@ -23,6 +23,14 @@ let clipboardTimer = null;
 let lastClipboardText = '';
 let updater = null;
 let tray = null;
+let requestWindow = null;
+let labelWindow = null;
+let labelHideTimer = null;
+let lastLabelText = '';
+let lastLabelMove = 0;
+const LABEL_SIZE = { width: 240, height: 30 };
+const LABEL_IDLE_MS = 2500;
+const LABEL_MOVE_INTERVAL_MS = 25;
 let quitting = false;
 // Closing the window keeps the app running in the tray, so the computer stays
 // reachable; the renderer turns this off when the user prefers a real exit.
@@ -81,6 +89,115 @@ function createWindow() {
   });
 }
 
+// --- connection request popup ------------------------------------------------
+// A small window in the middle of the screen. It is shown without taking the
+// keyboard focus, so a key being typed elsewhere can never accept a request.
+function showRequest(data) {
+  const deliver = () => {
+    if (!requestWindow || requestWindow.isDestroyed()) return;
+    requestWindow.webContents.send('request:data', data);
+    requestWindow.center();
+    requestWindow.showInactive();
+    requestWindow.moveTop();
+  };
+  if (requestWindow && !requestWindow.isDestroyed()) return deliver();
+  requestWindow = new BrowserWindow({
+    width: 400,
+    height: 216,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    backgroundColor: '#ffffff',
+    title: 'Bağlantı isteği',
+    webPreferences: {
+      preload: path.join(__dirname, 'request-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  requestWindow.setAlwaysOnTop(true, 'floating');
+  requestWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  requestWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  requestWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  requestWindow.on('closed', () => {
+    requestWindow = null;
+  });
+  requestWindow.loadFile(path.join(__dirname, 'renderer', 'request.html')).then(deliver);
+}
+
+function hideRequest() {
+  if (requestWindow && !requestWindow.isDestroyed()) requestWindow.hide();
+}
+
+// --- name tag next to the pointer --------------------------------------------
+// Shows who is moving the pointer on this computer. It never takes clicks or
+// focus, and disappears when the pointer rests or the session ends.
+function showCursorLabel(nx, ny, text) {
+  if (!Number.isFinite(nx) || !Number.isFinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+  const now = Date.now();
+  if (now - lastLabelMove < LABEL_MOVE_INTERVAL_MS) return;
+  lastLabelMove = now;
+  try {
+    if (!labelWindow || labelWindow.isDestroyed()) {
+      lastLabelText = '';
+      labelWindow = new BrowserWindow({
+        ...LABEL_SIZE,
+        frame: false,
+        transparent: true,
+        resizable: false,
+        focusable: false,
+        skipTaskbar: true,
+        hasShadow: false,
+        show: false,
+        alwaysOnTop: true,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+      });
+      labelWindow.setIgnoreMouseEvents(true);
+      labelWindow.setAlwaysOnTop(true, 'screen-saver');
+      labelWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      const created = labelWindow;
+      // Write the name once the page exists; until then the tag stays hidden.
+      created
+        .loadFile(path.join(__dirname, 'renderer', 'label.html'))
+        .then(() => {
+          if (labelWindow === created && lastLabelText) writeCursorLabel(lastLabelText);
+        })
+        .catch(() => {});
+    }
+    if (text !== lastLabelText) {
+      lastLabelText = text;
+      if (!labelWindow.webContents.isLoading()) writeCursorLabel(text);
+    }
+    const { bounds } = screen.getPrimaryDisplay();
+    const x = Math.min(bounds.x + bounds.width - LABEL_SIZE.width, Math.round(bounds.x + nx * bounds.width + 14));
+    const y = Math.min(bounds.y + bounds.height - LABEL_SIZE.height, Math.round(bounds.y + ny * bounds.height + 20));
+    labelWindow.setBounds({ x, y, ...LABEL_SIZE });
+    if (!labelWindow.isVisible()) labelWindow.showInactive();
+    clearTimeout(labelHideTimer);
+    labelHideTimer = setTimeout(() => {
+      if (labelWindow && !labelWindow.isDestroyed()) labelWindow.hide();
+    }, LABEL_IDLE_MS);
+  } catch (err) {
+    console.error('cursor label:', err.message);
+  }
+}
+
+function writeCursorLabel(text) {
+  labelWindow.webContents.executeJavaScript(`setLabel(${JSON.stringify(text)})`).catch(() => {});
+}
+
+function closeCursorLabel() {
+  clearTimeout(labelHideTimer);
+  if (labelWindow && !labelWindow.isDestroyed()) labelWindow.destroy();
+  labelWindow = null;
+}
+
 function showWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return createWindow();
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -90,6 +207,8 @@ function showWindow() {
 
 function quitApp() {
   quitting = true;
+  closeCursorLabel();
+  if (requestWindow && !requestWindow.isDestroyed()) requestWindow.destroy();
   app.quit();
 }
 
@@ -270,11 +389,32 @@ function setupIpc(deviceKey) {
 
   ipcMain.on('host:session', (_event, active) => {
     hosting = active === true;
-    if (!hosting) input.releaseAll();
+    if (!hosting) {
+      input.releaseAll();
+      closeCursorLabel();
+    }
   });
 
-  ipcMain.on('host:input', (_event, msg) => {
-    if (hosting) input.handle(msg);
+  ipcMain.on('host:input', (_event, msg, label) => {
+    if (!hosting) return;
+    input.handle(msg);
+    if (msg && (msg.t === 'm' || msg.t === 'd') && typeof label === 'string' && label) {
+      showCursorLabel(msg.x, msg.y, label.slice(0, 48));
+    }
+  });
+
+  // Only the main window may open the popup, and only the popup may answer.
+  const fromMain = (event) => mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents;
+  ipcMain.on('request:show', (event, data) => {
+    if (fromMain(event) && data && typeof data === 'object') showRequest(data);
+  });
+  ipcMain.on('request:hide', (event) => {
+    if (fromMain(event)) hideRequest();
+  });
+  ipcMain.on('request:answer', (event, answer) => {
+    if (!requestWindow || requestWindow.isDestroyed() || event.sender !== requestWindow.webContents) return;
+    hideRequest();
+    sendToWindow('request:answer', answer);
   });
 
   ipcMain.on('clipboard:sync', (_event, active) => {

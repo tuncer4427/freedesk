@@ -1,7 +1,7 @@
 {
   "name": "fardesk",
   "productName": "FarDesk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "FarDesk uzak masaüstü",
   "author": "FarDesk",
@@ -9,7 +9,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/input.js && node --check src/access.js && node --check src/files.js && node --check src/renderer/renderer.js && node --check build/after-pack.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/input.js && node --check src/access.js && node --check src/files.js && node --check src/request-preload.js && node --check src/renderer/request.js && node --check src/renderer/label.js && node --check src/renderer/renderer.js && node --check build/after-pack.js",
     "dist:win": "electron-builder --win --x64 --publish never",
     "dist:mac": "electron-builder --mac --arm64 --x64 --publish never"
   },

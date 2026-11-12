@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld('fardesk', {
   permissions: (prompt) => ipcRenderer.invoke('host:permissions', prompt),
   openSettings: (which) => ipcRenderer.invoke('host:open-settings', which),
   setHosting: (active) => ipcRenderer.send('host:session', active),
-  input: (msg) => ipcRenderer.send('host:input', msg),
+  input: (msg, label) => ipcRenderer.send('host:input', msg, label),
   syncClipboard: (active) => ipcRenderer.send('clipboard:sync', active),
   writeClipboard: (text) => ipcRenderer.send('clipboard:write', text),
   onClipboard: (callback) => ipcRenderer.on('clipboard:changed', (_event, text) => callback(text)),
@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld('fardesk', {
   setBackground: (enabled) => ipcRenderer.send('app:background', enabled),
   autostart: (enabled) => ipcRenderer.invoke('app:autostart', enabled),
   micAccess: () => ipcRenderer.invoke('mic:access'),
+  request: {
+    show: (data) => ipcRenderer.send('request:show', data),
+    hide: () => ipcRenderer.send('request:hide'),
+    onAnswer: (callback) => ipcRenderer.on('request:answer', (_event, answer) => callback(answer)),
+  },
   access: {
     status: () => ipcRenderer.invoke('access:status'),
     set: (password) => ipcRenderer.invoke('access:set', password),

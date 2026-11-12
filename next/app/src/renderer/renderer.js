@@ -8,7 +8,7 @@ const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 const RECONNECT_MS = 3000;
-const MOVE_INTERVAL_MS = 8;
+const MOVE_INTERVAL_MS = 4;
 const PEERS_KEY = 'fardesk.peers';
 const PREFS_KEY = 'fardesk.prefs';
 const ACCENTS = ['green', 'blue', 'purple', 'orange', 'red', 'slate'];
@@ -17,6 +17,12 @@ const FILE_CHUNK_BYTES = 64 * 1024;
 const FILE_BUFFER_LIMIT = 4 * 1024 * 1024;
 const MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_PEERS = 24;
+const MAX_HOSTED = 5;
+const MAX_REQUESTS = 5;
+const PING_INTERVAL_MS = 1000;
+const PING_STALE_MS = 3500;
+const PING_WARN_MS = 120;
+const PING_BAD_MS = 300;
 const THUMB_WIDTH = 320;
 
 // What the host's encoder aims for; the viewer picks one.
@@ -38,11 +44,12 @@ const ICONS = {
 let info = null;
 let socket = null;
 let myId = null;
-let pending = null; // viewer waiting for an answer: { sessionId, to }
-let incoming = null; // host deciding on a request: { sessionId, from }
-let session = null; // { role, sessionId, peerId, pc, channel, stream, hostPlatform }
-let starting = null; // host preparing its screen: { sessionId, signals }
-let signalChain = Promise.resolve();
+let pending = null; // an outgoing request waiting for an answer: { sessionId, to }
+let view = null; // the remote screen this window shows (a link), if any
+const hosted = new Map(); // sessionId -> link, the computers connected to this one
+const requests = new Map(); // sessionId -> incoming request waiting for a decision
+let capture = null; // the screen capture shared by all hosted links
+let mic = null; // this computer's microphone stream while voice is on
 let activeTab = 'recent';
 let prefs = null;
 
@@ -76,6 +83,8 @@ function loadPrefs() {
     accent: pick(saved.accent, ACCENTS, 'green'),
     allowFiles: saved.allowFiles !== false,
     background: saved.background !== false,
+    sounds: saved.sounds !== false,
+    cursorName: saved.cursorName !== false,
     allowControl: saved.allowControl !== false,
     allowClipboard: saved.allowClipboard !== false,
   };
@@ -232,12 +241,42 @@ function send(message) {
   if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
 }
 
+// Every open connection: the one remote screen this window shows, or all the
+// computers currently connected to this one.
+const links = () => (view ? [view] : [...hosted.values()]);
+const findLink = (sessionId) => (view && view.sessionId === sessionId ? view : hosted.get(sessionId) || null);
+const linkLabel = (link) => link.name || formatId(link.peerId);
+
 function connectTo(id) {
-  if (id.length !== 9 || pending || session || !myId) return;
+  if (id.length !== 9 || pending || view || hosted.size > 0 || !myId) return;
   $('remote-id').value = formatId(id);
   setMessage('Bağlanıyor…');
   send({ type: 'connect', to: id, name: prefs.name });
 }
+
+// --- sounds ------------------------------------------------------------------
+let audioContext = null;
+function chime(notes) {
+  try {
+    audioContext = audioContext || new AudioContext();
+    const start = audioContext.currentTime;
+    notes.forEach((frequency, index) => {
+      const at = start + index * 0.11;
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(0.16, at + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.2);
+      oscillator.connect(gain).connect(audioContext.destination);
+      oscillator.start(at);
+      oscillator.stop(at + 0.22);
+    });
+  } catch {}
+}
+const messageSound = () => prefs.sounds && chime([880, 1175]);
+const requestSound = () => prefs.sounds && chime([660, 880, 660]);
 
 // --- signaling ---------------------------------------------------------------
 function connectServer() {
@@ -262,7 +301,7 @@ function connectServer() {
       hidePasswordBox();
       setMessage('Sunucu bağlantısı koptu.');
     }
-    if (incoming) closeRequest();
+    for (const sessionId of [...requests.keys()]) dropRequest(sessionId);
     setTimeout(connectServer, RECONNECT_MS);
   };
   socket.onerror = () => {};
@@ -309,12 +348,13 @@ function onServerMessage(msg) {
       if (pending && pending.sessionId === msg.sessionId) startViewer(msg);
       break;
     case 'start':
-      if (incoming && incoming.sessionId === msg.sessionId) startHost(msg);
+      if (requests.has(msg.sessionId)) startHost(msg);
       break;
-    case 'signal':
-      if (session && session.sessionId === msg.sessionId) queueSignal(msg.data);
-      else if (starting && starting.sessionId === msg.sessionId) starting.signals.push(msg.data);
+    case 'signal': {
+      const link = findLink(msg.sessionId);
+      if (link) queueSignal(link, msg.data);
       break;
+    }
     case 'ended':
       onEnded(msg);
       break;
@@ -328,41 +368,59 @@ function onEnded(msg) {
     hidePasswordBox();
     setMessage(END_REASONS[msg.reason] || 'Bağlantı kurulamadı.');
   }
-  if (incoming && incoming.sessionId === msg.sessionId) closeRequest();
-  if (starting && starting.sessionId === msg.sessionId) starting = null;
-  if (session && session.sessionId === msg.sessionId) {
-    const wasViewer = session.role === 'viewer';
-    endSession(false);
-    if (wasViewer) setMessage(END_REASONS[msg.reason] || 'Bağlantı sonlandı.');
+  if (requests.has(msg.sessionId)) dropRequest(msg.sessionId);
+  const link = findLink(msg.sessionId);
+  if (link) {
+    endLink(link, false);
+    if (link.role === 'viewer') setMessage(END_REASONS[msg.reason] || 'Bağlantı sonlandı.');
   }
 }
 
-// --- incoming request (host side) --------------------------------------------
+// --- incoming requests (host side) -------------------------------------------
+// Requests are shown one at a time in a small window in the middle of the
+// screen, so they are seen even when FarDesk itself is in the background.
 function onIncoming(msg) {
-  // One session at a time; a second request is declined automatically.
-  if (session || incoming || pending) return send({ type: 'answer', sessionId: msg.sessionId, accept: false });
-  incoming = { sessionId: msg.sessionId, from: msg.from };
-  $('request-from').textContent = formatId(msg.from);
-  $('request-name').textContent = msg.name ? `(${msg.name})` : '';
-  $('request-what').textContent = prefs.allowControl
-    ? 'bu bilgisayarın ekranını görmek ve kontrol etmek istiyor.'
-    : 'bu bilgisayarın ekranını görmek istiyor.';
-  $('request').hidden = false;
-  $('request-reject').focus();
+  const busy = view || pending || requests.size >= MAX_REQUESTS || hosted.size >= MAX_HOSTED;
+  if (busy) return send({ type: 'answer', sessionId: msg.sessionId, accept: false });
+  const { sessionId } = msg;
+  requests.set(sessionId, { sessionId, from: msg.from, name: typeof msg.name === 'string' ? msg.name.slice(0, 64) : '' });
+  showNextRequest();
+  requestSound();
   // With an access password set, the other side may prove it knows it
   // instead of waiting for someone to press "Kabul et".
-  const { sessionId } = incoming;
   api.access.challenge(sessionId).then((challenge) => {
-    if (challenge && incoming && incoming.sessionId === sessionId) {
+    if (challenge && requests.has(sessionId)) {
       send({ type: 'auth', sessionId, data: { kind: 'challenge', salt: challenge.salt, nonce: challenge.nonce } });
     }
   });
 }
 
-function closeRequest() {
-  if (incoming) api.access.forget(incoming.sessionId);
-  incoming = null;
-  $('request').hidden = true;
+function showNextRequest() {
+  const next = requests.values().next().value;
+  if (!next) return api.request.hide();
+  api.request.show({
+    sessionId: next.sessionId,
+    from: formatId(next.from),
+    name: next.name,
+    control: prefs.allowControl,
+    waiting: requests.size - 1,
+    theme: document.documentElement.dataset.theme,
+    accent: prefs.accent,
+  });
+}
+
+function dropRequest(sessionId) {
+  if (!requests.delete(sessionId)) return;
+  api.access.forget(sessionId);
+  showNextRequest();
+}
+
+function answerRequest(sessionId, accept) {
+  if (!requests.has(sessionId)) return;
+  send({ type: 'answer', sessionId, accept: accept === true });
+  // An accepted request stays listed until the server confirms with "start".
+  if (accept !== true) dropRequest(sessionId);
+  else api.request.hide();
 }
 
 // --- access password ---------------------------------------------------------
@@ -408,49 +466,65 @@ async function onAuth(msg) {
       $('password-input').value = '';
       $('password-input').focus();
     }
-  } else if (incoming && incoming.sessionId === msg.sessionId && data.kind === 'proof') {
-    const { sessionId } = incoming;
+  } else if (requests.has(msg.sessionId) && data.kind === 'proof') {
+    const { sessionId } = msg;
     const ok = await api.access.verify(sessionId, data.proof);
-    if (!incoming || incoming.sessionId !== sessionId) return;
-    if (ok) {
-      $('request').hidden = true;
-      send({ type: 'answer', sessionId, accept: true });
-    } else {
-      send({ type: 'auth', sessionId, data: { kind: 'denied' } });
-    }
+    if (!requests.has(sessionId)) return;
+    if (ok) answerRequest(sessionId, true);
+    else send({ type: 'auth', sessionId, data: { kind: 'denied' } });
   }
 }
 
 // --- WebRTC ------------------------------------------------------------------
-function createPeer(iceServers) {
+function createLink(role, sessionId, peerId, name, iceServers) {
   const pc = new RTCPeerConnection({ iceServers: iceServers || [] });
+  const link = {
+    role,
+    sessionId,
+    peerId,
+    name: name || '',
+    pc,
+    alive: true,
+    channel: null,
+    files: null,
+    quality: 'balanced',
+    hostPlatform: null,
+    signals: Promise.resolve(),
+    audio: null,
+    voice: false,
+    ping: null,
+    lastPing: 0,
+  };
   pc.onicecandidate = (event) => {
-    if (event.candidate && session) send({ type: 'signal', sessionId: session.sessionId, data: { candidate: event.candidate } });
+    if (event.candidate && link.alive) send({ type: 'signal', sessionId, data: { candidate: event.candidate } });
   };
   pc.addEventListener('track', (event) => {
-    if (event.track.kind === 'audio') $('remote-audio').srcObject = new MediaStream([event.track]);
+    if (event.track.kind !== 'audio' || !link.alive) return;
+    link.audio = document.createElement('audio');
+    link.audio.autoplay = true;
+    link.audio.srcObject = new MediaStream([event.track]);
+    $('audios').append(link.audio);
   });
   pc.onconnectionstatechange = () => {
-    if (!session || session.pc !== pc) return;
-    if (pc.connectionState === 'connected' && session.role === 'viewer') $('viewer-state').textContent = '';
+    if (!link.alive) return;
+    if (pc.connectionState === 'connected' && role === 'viewer') $('viewer-state').textContent = link.watchOnly ? 'Yalnızca izleme' : '';
     if (pc.connectionState === 'failed') {
-      const wasViewer = session.role === 'viewer';
-      endSession(true);
-      if (wasViewer) setMessage('Bağlantı kurulamadı. Ağ bu bağlantıya izin vermiyor olabilir.');
+      endLink(link, true);
+      if (role === 'viewer') setMessage('Bağlantı kurulamadı. Ağ bu bağlantıya izin vermiyor olabilir.');
     }
   };
-  return pc;
+  return link;
 }
 
 // Signals are applied strictly in arrival order: a candidate must never be
 // added before the description it belongs to.
-function queueSignal(data) {
-  signalChain = signalChain.then(() => onSignal(data));
+function queueSignal(link, data) {
+  link.signals = link.signals.then(() => onSignal(link, data));
 }
 
-async function onSignal(data) {
-  if (!session || !data) return;
-  const { pc } = session;
+async function onSignal(link, data) {
+  if (!link.alive || !data) return;
+  const { pc } = link;
   try {
     if (data.sdp) {
       await pc.setRemoteDescription(data.sdp);
@@ -458,11 +532,14 @@ async function onSignal(data) {
         // Reserve a voice line in both directions; it stays silent until a
         // microphone is switched on.
         for (const transceiver of pc.getTransceivers()) {
-          if (transceiver.receiver.track.kind === 'audio') transceiver.direction = 'sendrecv';
+          if (transceiver.receiver.track.kind === 'audio') {
+            transceiver.direction = 'sendrecv';
+            if (mic) await transceiver.sender.replaceTrack(mic.getAudioTracks()[0]).catch(() => {});
+          }
         }
         await pc.setLocalDescription(await pc.createAnswer());
-        send({ type: 'signal', sessionId: session.sessionId, data: { sdp: pc.localDescription } });
-        if (session.role === 'host') applyQuality(session.quality);
+        send({ type: 'signal', sessionId: link.sessionId, data: { sdp: pc.localDescription } });
+        if (link.role === 'host') applyQuality(link, link.quality);
       }
     } else if (data.candidate) {
       await pc.addIceCandidate(data.candidate);
@@ -472,11 +549,11 @@ async function onSignal(data) {
   }
 }
 
-function applyQuality(name) {
-  if (!session || session.role !== 'host') return;
+function applyQuality(link, name) {
+  if (link.role !== 'host' || !link.alive) return;
   const preset = Object.hasOwn(QUALITY, name) ? QUALITY[name] : QUALITY.balanced;
-  session.quality = Object.hasOwn(QUALITY, name) ? name : 'balanced';
-  for (const sender of session.pc.getSenders()) {
+  link.quality = Object.hasOwn(QUALITY, name) ? name : 'balanced';
+  for (const sender of link.pc.getSenders()) {
     if (!sender.track || sender.track.kind !== 'video') continue;
     sender.track.contentHint = preset.hint;
     const params = sender.getParameters();
@@ -488,16 +565,26 @@ function applyQuality(name) {
   }
 }
 
-function bindChannel(channel) {
-  session.channel = channel;
+function sendTo(link, msg) {
+  if (link.channel && link.channel.readyState === 'open') link.channel.send(JSON.stringify(msg));
+}
+
+// To the remote screen when viewing; to every connected computer when hosting.
+function control(msg) {
+  for (const link of links()) sendTo(link, msg);
+}
+
+function bindChannel(link, channel) {
+  link.channel = channel;
   channel.onopen = () => {
-    if (!session) return;
-    if (session.role === 'host') {
+    if (!link.alive) return;
+    if (link.role === 'host') {
       if (prefs.allowClipboard) api.syncClipboard(true);
-      channel.send(JSON.stringify({ t: 'hello', platform: info.platform, control: prefs.allowControl }));
+      sendTo(link, { t: 'hello', platform: info.platform, control: prefs.allowControl, name: prefs.name });
+      if (mic) sendTo(link, { t: 'voice', on: true });
     } else {
       api.syncClipboard(true);
-      channel.send(JSON.stringify({ t: 'quality', value: prefs.quality }));
+      sendTo(link, { t: 'quality', value: prefs.quality });
     }
   };
   channel.onmessage = (event) => {
@@ -507,75 +594,124 @@ function bindChannel(channel) {
     } catch {
       return;
     }
-    if (!session || !msg) return;
-    if (session.role === 'host') {
+    if (!link.alive || !msg) return;
+    if (msg.t === 'chat' || msg.t === 'voice') return onPanelMessage(link, msg);
+    if (link.role === 'host') {
       if (msg.t === 'clip') {
         if (prefs.allowClipboard) api.writeClipboard(msg.text);
       } else if (msg.t === 'quality') {
-        applyQuality(msg.value);
-      } else if (msg.t === 'chat' || msg.t === 'voice') {
-        onPanelMessage(msg);
+        applyQuality(link, msg.value);
       } else if (prefs.allowControl) {
-        api.input(msg);
+        api.input(msg, prefs.cursorName ? linkLabel(link) : '');
       }
     } else if (msg.t === 'clip') {
       api.writeClipboard(msg.text);
-    } else if (msg.t === 'chat' || msg.t === 'voice') {
-      onPanelMessage(msg);
     } else if (msg.t === 'hello') {
-      session.hostPlatform = msg.platform;
-      if (msg.control === false) $('viewer-state').textContent = 'Yalnızca izleme';
+      link.hostPlatform = msg.platform;
+      link.watchOnly = msg.control === false;
+      if (link.watchOnly) $('viewer-state').textContent = 'Yalnızca izleme';
     }
   };
 }
 
-function control(msg) {
-  const channel = session && session.channel;
-  if (channel && channel.readyState === 'open') channel.send(JSON.stringify(msg));
+// Pointer moves travel on their own channel that never waits for a lost
+// packet: a late position is worthless once a newer one exists.
+function bindPointer(link, channel) {
+  link.pointer = channel;
+  if (link.role !== 'host') return;
+  channel.onmessage = (event) => {
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (link.alive && msg && msg.t === 'm' && prefs.allowControl) api.input(msg, prefs.cursorName ? linkLabel(link) : '');
+  };
 }
 
 // --- host role ---------------------------------------------------------------
-async function startHost(msg) {
-  const { sessionId, from } = incoming;
-  closeRequest();
-  // The viewer's offer can arrive while the screen capture is still starting.
-  starting = { sessionId, signals: [] };
-  try {
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      audio: false,
-      video: { frameRate: CAPTURE_FRAMERATE },
+// One screen capture is shared by every connected computer.
+function ensureCapture() {
+  if (!capture) {
+    const started = { stream: null, promise: null };
+    started.promise = navigator.mediaDevices
+      .getDisplayMedia({ audio: false, video: { frameRate: CAPTURE_FRAMERATE } })
+      .then((stream) => {
+        started.stream = stream;
+        // Everyone left while the capture was starting.
+        if (capture !== started) for (const track of stream.getTracks()) track.stop();
+        return stream;
+      })
+      .catch((err) => {
+        if (capture === started) capture = null;
+        throw err;
+      });
+    capture = started;
+  }
+  return capture.promise;
+}
+
+function stopCapture() {
+  const ended = capture;
+  capture = null;
+  if (ended && ended.stream) for (const track of ended.stream.getTracks()) track.stop();
+}
+
+function startHost(msg) {
+  const request = requests.get(msg.sessionId);
+  dropRequest(msg.sessionId);
+  const link = createLink('host', request.sessionId, request.from, request.name, msg.iceServers);
+  hosted.set(link.sessionId, link);
+  link.pc.ondatachannel = (event) => {
+    if (event.channel.label === 'files') bindFiles(link, event.channel);
+    else if (event.channel.label === 'pointer') bindPointer(link, event.channel);
+    else bindChannel(link, event.channel);
+  };
+  // The viewer's offer may arrive first; it waits here until the screen is ready.
+  link.signals = ensureCapture()
+    .then((stream) => {
+      if (link.alive) for (const track of stream.getTracks()) link.pc.addTrack(track, stream);
+    })
+    .catch((err) => {
+      console.error('host start failed', err);
+      endLink(link, true);
+      refreshPermissions(false);
     });
-    if (!starting || starting.sessionId !== sessionId) {
-      // The request was cancelled while the capture was starting.
-      for (const track of stream.getTracks()) track.stop();
-      return;
-    }
-    const pc = createPeer(msg.iceServers);
-    session = { role: 'host', sessionId, peerId: from, pc, channel: null, stream, quality: 'balanced' };
-    for (const track of stream.getTracks()) pc.addTrack(track, stream);
-    pc.ondatachannel = (event) => {
-      if (event.channel.label === 'files') bindFiles(event.channel);
-      else bindChannel(event.channel);
-    };
-    api.setHosting(true);
-    $('hosting-peer').textContent = formatId(from);
-    $('hosting').hidden = false;
-    openPanel(formatId(from), false);
-    const early = starting.signals;
-    starting = null;
-    for (const data of early) queueSignal(data);
-  } catch (err) {
-    console.error('host start failed', err);
-    starting = null;
-    if (session && session.sessionId === sessionId) endSession(true);
-    else send({ type: 'bye', sessionId });
-    refreshPermissions(false);
+  api.setHosting(true);
+  if (hosted.size === 1) openPanel('Oturum', false);
+  addBubble('note', `${linkLabel(link)} bağlandı.`);
+  renderHosting();
+}
+
+function renderHosting() {
+  const box = $('hosting-list');
+  box.replaceChildren();
+  $('hosting').hidden = hosted.size === 0;
+  $('hosting-stop').hidden = hosted.size < 2;
+  for (const link of hosted.values()) {
+    const row = document.createElement('div');
+    row.className = 'hosting-row';
+    const who = document.createElement('span');
+    const id = document.createElement('strong');
+    id.textContent = formatId(link.peerId);
+    who.append(id, link.name ? ` (${link.name}) bağlı` : ' bağlı');
+    const ping = document.createElement('span');
+    ping.className = 'ping';
+    link.pingLabel = ping;
+    showPing(link);
+    const stop = document.createElement('button');
+    stop.className = 'danger small';
+    stop.textContent = 'Bağlantıyı kes';
+    stop.addEventListener('click', () => endLink(link, true));
+    row.append(who, ping, stop);
+    box.append(row);
   }
 }
 
 // --- viewer role -------------------------------------------------------------
 function showView(name) {
-  for (const view of ['home', 'settings', 'viewer']) $(view).hidden = view !== name;
+  for (const id of ['home', 'settings', 'viewer']) $(id).hidden = id !== name;
 }
 
 function applyScale(scale) {
@@ -588,22 +724,26 @@ async function startViewer(msg) {
   pending = null;
   hidePasswordBox();
   setMessage('');
-  const pc = createPeer(msg.iceServers);
-  session = { role: 'viewer', sessionId, peerId: to, pc, channel: null, stream: null, hostPlatform: null };
+  const known = loadPeers().find((p) => p.id === to);
+  const link = createLink('viewer', sessionId, to, known ? known.name : '', msg.iceServers);
+  view = link;
+  const { pc } = link;
   updatePeer(to, usedKey ? { last: Date.now(), key: usedKey.key, salt: usedKey.salt } : { last: Date.now() });
-  bindChannel(pc.createDataChannel('control', { ordered: true }));
-  bindFiles(pc.createDataChannel('files', { ordered: true }));
+  bindChannel(link, pc.createDataChannel('control', { ordered: true }));
+  bindPointer(link, pc.createDataChannel('pointer', { ordered: false, maxRetransmits: 0 }));
+  bindFiles(link, pc.createDataChannel('files', { ordered: true }));
   pc.addTransceiver('video', { direction: 'recvonly' });
   pc.addTransceiver('audio', { direction: 'sendrecv' });
-  pc.ontrack = (event) => {
-    // Show each frame as soon as it arrives rather than buffering for smoothness.
+  pc.addEventListener('track', (event) => {
     if (event.track.kind !== 'video') return;
+    // Show each frame as soon as it arrives rather than buffering for smoothness.
     if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0;
     $('screen').srcObject = new MediaStream([event.track]);
-  };
-  const known = loadPeers().find((p) => p.id === to);
-  $('viewer-title').textContent = known && known.name ? `${known.name} · ${formatId(to)}` : formatId(to);
+  });
+  $('viewer-title').textContent = link.name ? `${link.name} · ${formatId(to)}` : formatId(to);
   $('viewer-state').textContent = 'Bağlanıyor…';
+  link.pingLabel = $('viewer-ping');
+  showPing(link);
   $('viewer-quality').value = prefs.quality;
   applyScale(prefs.scale);
   openPanel($('viewer-title').textContent, true);
@@ -614,7 +754,7 @@ async function startViewer(msg) {
     send({ type: 'signal', sessionId, data: { sdp: pc.localDescription } });
   } catch (err) {
     console.error('viewer start failed', err);
-    endSession(true);
+    endLink(link, true);
     setMessage('Bağlantı kurulamadı.');
   }
 }
@@ -634,64 +774,134 @@ function captureThumb() {
   }
 }
 
-function endSession(notify) {
-  if (!session) return;
-  const ended = session;
-  if (ended.role === 'viewer') {
+function stopMic() {
+  if (mic) for (const track of mic.getTracks()) track.stop();
+  mic = null;
+  setMicButton(false);
+}
+
+function endLink(link, notify) {
+  if (!link.alive) return;
+  link.alive = false;
+  if (notify) send({ type: 'bye', sessionId: link.sessionId });
+  if (link.audio) link.audio.remove();
+  if (link.role === 'viewer') {
     const thumb = captureThumb();
-    if (thumb) updatePeer(ended.peerId, { thumb });
-  }
-  session = null;
-  if (notify) send({ type: 'bye', sessionId: ended.sessionId });
-  api.syncClipboard(false);
-  if (ended.mic) for (const track of ended.mic.getTracks()) track.stop();
-  api.files.abort();
-  closePanel();
-  if (ended.role === 'host') {
-    api.setHosting(false);
-    $('hosting').hidden = true;
-    if (ended.stream) for (const track of ended.stream.getTracks()) track.stop();
-  } else {
-    if (ended.channel && ended.channel.readyState === 'open') ended.channel.send(JSON.stringify({ t: 'release' }));
+    if (thumb) updatePeer(link.peerId, { thumb });
+    sendTo(link, { t: 'release' });
+    view = null;
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     $('screen').srcObject = null;
     showView('home');
+  } else {
+    hosted.delete(link.sessionId);
+    renderHosting();
+    if (hosted.size > 0) addBubble('note', `${linkLabel(link)} ayrıldı.`);
   }
   try {
-    ended.pc.close();
+    link.pc.close();
   } catch {}
+  if (links().length === 0) {
+    // The last connection is gone: release everything a session holds.
+    api.syncClipboard(false);
+    api.setHosting(false);
+    api.files.abort();
+    stopCapture();
+    stopMic();
+    closePanel();
+  } else {
+    showVoiceState();
+  }
+}
+
+function endAll() {
+  for (const link of links()) endLink(link, true);
+}
+
+// --- connection quality ------------------------------------------------------
+function showPing(link) {
+  const label = link.pingLabel;
+  if (!label) return;
+  const stale = performance.now() - link.lastPing > PING_STALE_MS;
+  const state = link.pc.connectionState;
+  if (link.ping === null || state === 'new' || state === 'connecting') {
+    label.textContent = '';
+    label.dataset.level = '';
+  } else if (stale || state === 'disconnected') {
+    label.textContent = 'Bağlantı zayıf';
+    label.dataset.level = 'bad';
+  } else {
+    label.textContent = `${link.ping} ms`;
+    label.dataset.level = link.ping >= PING_BAD_MS ? 'bad' : link.ping >= PING_WARN_MS ? 'warn' : 'good';
+    label.title = link.relayed ? 'Gecikme (aktarma sunucusu üzerinden)' : 'Gecikme (doğrudan bağlantı)';
+  }
+}
+
+async function measurePings() {
+  for (const link of links()) {
+    try {
+      const stats = await link.pc.getStats();
+      let pair = null;
+      stats.forEach((report) => {
+        if (report.type === 'transport' && report.selectedCandidatePairId) pair = stats.get(report.selectedCandidatePairId) || pair;
+      });
+      if (!pair) {
+        stats.forEach((report) => {
+          if (report.type === 'candidate-pair' && report.nominated && report.state === 'succeeded') pair = report;
+        });
+      }
+      if (pair && Number.isFinite(pair.currentRoundTripTime)) {
+        link.ping = Math.max(1, Math.round(pair.currentRoundTripTime * 1000));
+        link.lastPing = performance.now();
+        const local = stats.get(pair.localCandidateId);
+        link.relayed = Boolean(local && local.candidateType === 'relay');
+      }
+    } catch {}
+    if (link.alive) showPing(link);
+  }
 }
 
 // --- session panel: chat, voice, files ----------------------------------------
+function clearBadges() {
+  $('viewer-panel').classList.remove('badge');
+  $('hosting-panel').classList.remove('badge');
+}
+
 function openPanel(title, quiet) {
   $('panel-title').textContent = title;
   $('chat-log').replaceChildren();
   $('voice-state').textContent = '';
   setMicButton(false);
   $('panel').hidden = quiet;
-  $('viewer-panel').classList.remove('badge');
-  $('hosting-panel').classList.remove('badge');
+  clearBadges();
 }
 
 function closePanel() {
   $('panel').hidden = true;
-  $('remote-audio').srcObject = null;
-  $('viewer-panel').classList.remove('badge');
-  $('hosting-panel').classList.remove('badge');
+  $('audios').replaceChildren();
+  clearBadges();
 }
 
 function togglePanel() {
   $('panel').hidden = !$('panel').hidden;
-  $('viewer-panel').classList.remove('badge');
-  $('hosting-panel').classList.remove('badge');
+  clearBadges();
   if (!$('panel').hidden) $('chat-input').focus();
-  else if (viewing()) $('stage').focus();
+  else if (view) $('stage').focus();
 }
 
-function addBubble(kind, text) {
+function addBubble(kind, text, from) {
   const bubble = document.createElement('div');
   bubble.className = `bubble ${kind}`;
-  bubble.textContent = text;
+  if (from) {
+    const who = document.createElement('span');
+    who.className = 'bubble-from';
+    who.textContent = from;
+    bubble.append(who);
+  }
+  const body = document.createElement('span');
+  body.textContent = text;
+  bubble.append(body);
+  bubble.body = body;
   const log = $('chat-log');
   log.append(bubble);
   log.scrollTop = log.scrollHeight;
@@ -703,19 +913,31 @@ function notifyPanel() {
   $('viewer-panel').classList.add('badge');
   $('hosting-panel').classList.add('badge');
   // The person at the shared computer may not be looking at this window.
-  if (session && session.role === 'host') {
+  if (hosted.size > 0) {
     $('panel').hidden = false;
     api.attention();
   }
 }
 
-function onPanelMessage(msg) {
+function showVoiceState() {
+  const talking = links().filter((link) => link.voice);
+  $('voice-state').textContent =
+    talking.length === 0
+      ? ''
+      : view
+        ? 'Karşı tarafın mikrofonu açık.'
+        : `Mikrofonu açık: ${talking.map(linkLabel).join(', ')}`;
+}
+
+function onPanelMessage(link, msg) {
   if (msg.t === 'chat' && typeof msg.text === 'string' && msg.text) {
-    addBubble('theirs', msg.text.slice(0, MAX_CHAT_CHARS));
+    addBubble('theirs', msg.text.slice(0, MAX_CHAT_CHARS), link.role === 'host' ? linkLabel(link) : '');
+    messageSound();
     notifyPanel();
   } else if (msg.t === 'voice') {
-    $('voice-state').textContent = msg.on === true ? 'Karşı tarafın mikrofonu açık.' : '';
-    if (msg.on === true) notifyPanel();
+    link.voice = msg.on === true;
+    showVoiceState();
+    if (link.voice) notifyPanel();
   }
 }
 
@@ -724,16 +946,19 @@ function setMicButton(on) {
   $('mic-toggle').textContent = on ? 'Mikrofonu kapat' : 'Mikrofonu aç';
 }
 
+const audioSender = (link) => {
+  const transceiver = link.pc.getTransceivers().find((t) => t.receiver.track.kind === 'audio');
+  return transceiver ? transceiver.sender : null;
+};
+
 async function toggleMic() {
-  if (!session) return;
-  const current = session;
-  const audio = current.pc.getTransceivers().find((t) => t.receiver.track.kind === 'audio');
-  if (!audio) return addBubble('note', 'Bu oturumda sesli görüşme kullanılamıyor.');
-  if (current.mic) {
-    for (const track of current.mic.getTracks()) track.stop();
-    current.mic = null;
-    await audio.sender.replaceTrack(null).catch(() => {});
-    setMicButton(false);
+  if (links().length === 0) return;
+  if (mic) {
+    stopMic();
+    for (const link of links()) {
+      const sender = audioSender(link);
+      if (sender) await sender.replaceTrack(null).catch(() => {});
+    }
     control({ t: 'voice', on: false });
     return;
   }
@@ -742,12 +967,15 @@ async function toggleMic() {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-    if (session !== current) {
+    if (links().length === 0 || mic) {
       for (const track of stream.getTracks()) track.stop();
       return;
     }
-    await audio.sender.replaceTrack(stream.getAudioTracks()[0]);
-    current.mic = stream;
+    mic = stream;
+    for (const link of links()) {
+      const sender = audioSender(link);
+      if (sender) await sender.replaceTrack(stream.getAudioTracks()[0]).catch(() => {});
+    }
     setMicButton(true);
     control({ t: 'voice', on: true });
   } catch (err) {
@@ -758,18 +986,18 @@ async function toggleMic() {
 
 // Files travel on their own channel: a header, the bytes in order, then a
 // "done" marker. One file at a time in each direction.
-function bindFiles(channel) {
+function bindFiles(link, channel) {
   channel.binaryType = 'arraybuffer';
   channel.bufferedAmountLowThreshold = FILE_BUFFER_LIMIT / 2;
-  session.files = { channel, queue: [], sending: false, refused: new Set(), incoming: null, chain: Promise.resolve() };
-  const state = session.files;
+  const state = { channel, queue: [], sending: false, refused: new Set(), incoming: null, chain: Promise.resolve() };
+  link.files = state;
   channel.onmessage = (event) => {
     const data = event.data;
-    state.chain = state.chain.then(() => onFileMessage(state, data)).catch((err) => console.error('file receive', err));
+    state.chain = state.chain.then(() => onFileMessage(link, state, data)).catch((err) => console.error('file receive', err));
   };
 }
 
-async function onFileMessage(state, data) {
+async function onFileMessage(link, state, data) {
   if (typeof data !== 'string') {
     const file = state.incoming;
     if (!file || !file.accepted) return;
@@ -778,7 +1006,7 @@ async function onFileMessage(state, data) {
     const now = performance.now();
     if (now - file.shown > 250) {
       file.shown = now;
-      file.label.textContent = `${file.name} alınıyor… %${Math.floor((file.received / Math.max(1, file.size)) * 100)}`;
+      file.bubble.body.textContent = `${file.name} alınıyor… %${Math.floor((file.received / Math.max(1, file.size)) * 100)}`;
     }
     return;
   }
@@ -795,15 +1023,12 @@ async function onFileMessage(state, data) {
       state.channel.send(JSON.stringify({ t: 'refused', id: msg.id }));
       addBubble('note', text);
     };
-    if (session && session.role === 'host' && !prefs.allowFiles) return refuse('Dosya gönderimi bu bilgisayarın ayarlarında kapalı.');
+    if (link.role === 'host' && !prefs.allowFiles) return refuse('Dosya gönderimi bu bilgisayarın ayarlarında kapalı.');
     const name = String(msg.name).slice(0, 255);
     const saved = await api.files.begin(msg.id, name, msg.size);
     if (!saved) return refuse(`${name} alınamadı.`);
-    const bubble = addBubble('theirs file', '');
-    const label = document.createElement('span');
-    label.textContent = `${saved} alınıyor…`;
-    bubble.append(label);
-    state.incoming = { id: msg.id, accepted: true, name: saved, size: msg.size, received: 0, shown: 0, bubble, label };
+    const bubble = addBubble('theirs file', `${saved} alınıyor…`, link.role === 'host' ? linkLabel(link) : '');
+    state.incoming = { id: msg.id, accepted: true, name: saved, size: msg.size, received: 0, shown: 0, bubble };
     notifyPanel();
   } else if (msg.t === 'done') {
     const file = state.incoming;
@@ -811,68 +1036,84 @@ async function onFileMessage(state, data) {
     if (!file || file.id !== msg.id || !file.accepted) return;
     const savedPath = await api.files.end(file.id);
     if (!savedPath) {
-      file.label.textContent = `${file.name} alınamadı.`;
+      file.bubble.body.textContent = `${file.name} alınamadı.`;
       return;
     }
-    file.label.textContent = `${file.name} alındı.`;
+    file.bubble.body.textContent = `${file.name} alındı.`;
     const reveal = document.createElement('button');
     reveal.type = 'button';
     reveal.textContent = 'Klasörde göster';
     reveal.addEventListener('click', () => api.files.reveal(savedPath));
     file.bubble.append(reveal);
+    messageSound();
   } else if (msg.t === 'refused') {
     state.refused.add(msg.id);
   }
 }
 
 function queueFiles(fileList) {
-  if (!session || !session.files) return;
   for (const file of fileList) {
-    if (file.size > MAX_FILE_BYTES) addBubble('note', `${file.name} çok büyük (en fazla 4 GB).`);
-    else session.files.queue.push(file);
+    if (file.size > MAX_FILE_BYTES) {
+      addBubble('note', `${file.name} çok büyük (en fazla 4 GB).`);
+      continue;
+    }
+    for (const link of links()) if (link.files) link.files.queue.push(file);
   }
-  sendNextFile(session);
+  for (const link of links()) if (link.files) sendNextFile(link);
 }
 
-async function sendNextFile(owner) {
-  const state = owner.files;
+async function sendNextFile(link) {
+  const state = link.files;
   if (state.sending) return;
   state.sending = true;
+  const usable = () => link.alive && state.channel.readyState === 'open';
   try {
-    while (state.queue.length > 0 && session === owner && state.channel.readyState === 'open') {
+    while (state.queue.length > 0 && usable()) {
       const file = state.queue.shift();
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
-      const bubble = addBubble('mine file', `${file.name} gönderiliyor…`);
+      const to = hosted.size > 1 ? ` → ${linkLabel(link)}` : '';
+      const bubble = addBubble('mine file', `${file.name}${to} gönderiliyor…`);
       state.channel.send(JSON.stringify({ t: 'file', id, name: file.name, size: file.size }));
       let sent = 0;
       let shown = 0;
       let ok = true;
       while (sent < file.size) {
-        if (session !== owner || state.channel.readyState !== 'open' || state.refused.has(id)) {
+        if (!usable() || state.refused.has(id)) {
           ok = false;
           break;
         }
         if (state.channel.bufferedAmount > FILE_BUFFER_LIMIT) {
           await new Promise((resolve) => {
             const timer = setTimeout(resolve, 1000);
-            state.channel.addEventListener('bufferedamountlow', () => { clearTimeout(timer); resolve(); }, { once: true });
+            state.channel.addEventListener(
+              'bufferedamountlow',
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true },
+            );
           });
           continue;
         }
         const chunk = await file.slice(sent, sent + FILE_CHUNK_BYTES).arrayBuffer();
+        if (!usable()) {
+          ok = false;
+          break;
+        }
         state.channel.send(chunk);
         sent += chunk.byteLength;
         const now = performance.now();
         if (now - shown > 250) {
           shown = now;
-          bubble.textContent = `${file.name} gönderiliyor… %${Math.floor((sent / Math.max(1, file.size)) * 100)}`;
+          bubble.body.textContent = `${file.name}${to} gönderiliyor… %${Math.floor((sent / Math.max(1, file.size)) * 100)}`;
         }
       }
-      if (ok && !state.refused.has(id) && state.channel.readyState === 'open') {
+      if (ok && !state.refused.has(id) && usable()) {
         state.channel.send(JSON.stringify({ t: 'done', id }));
-        bubble.textContent = `${file.name} gönderildi.`;
+        bubble.body.textContent = `${file.name}${to} gönderildi.`;
       } else {
-        bubble.textContent = state.refused.has(id) ? `${file.name} karşı tarafça kabul edilmedi.` : `${file.name} gönderilemedi.`;
+        bubble.body.textContent = state.refused.has(id) ? `${file.name}${to} karşı tarafça kabul edilmedi.` : `${file.name}${to} gönderilemedi.`;
       }
     }
   } catch (err) {
@@ -896,7 +1137,7 @@ function setupPanel() {
   $('chat-form').addEventListener('submit', (event) => {
     event.preventDefault();
     const text = $('chat-input').value.trim().slice(0, MAX_CHAT_CHARS);
-    if (!text || !session || !session.channel || session.channel.readyState !== 'open') return;
+    if (!text || !links().some((link) => link.channel && link.channel.readyState === 'open')) return;
     control({ t: 'chat', text });
     addBubble('mine', text);
     $('chat-input').value = '';
@@ -904,8 +1145,6 @@ function setupPanel() {
 }
 
 // --- viewer input capture ----------------------------------------------------
-const viewing = () => session && session.role === 'viewer';
-
 // Position inside the remote picture as 0..1, or null in the letterbox bars.
 function pointerPosition(event) {
   const video = $('screen');
@@ -928,30 +1167,36 @@ function setupViewerInput() {
 
   const flushMove = () => {
     moveTimer = null;
-    if (!queued || !viewing()) return;
-    control({ t: 'm', x: queued.x, y: queued.y });
+    if (!queued || !view) return;
+    const msg = JSON.stringify({ t: 'm', x: queued.x, y: queued.y });
     queued = null;
     lastMove = performance.now();
+    const pointer = view.pointer;
+    if (pointer && pointer.readyState === 'open') pointer.send(msg);
+    else if (view.channel && view.channel.readyState === 'open') view.channel.send(msg);
   };
 
-  video.addEventListener('mousemove', (event) => {
-    if (!viewing()) return;
+  const onMove = (event) => {
+    if (!view) return;
     const pos = pointerPosition(event);
     if (!pos) return;
     queued = pos;
     const wait = MOVE_INTERVAL_MS - (performance.now() - lastMove);
     if (wait <= 0) flushMove();
     else if (!moveTimer) moveTimer = setTimeout(flushMove, wait);
-  });
+  };
+  // The raw event arrives as soon as the mouse reports, without waiting for
+  // the next screen refresh.
+  video.addEventListener('onpointerrawupdate' in video ? 'pointerrawupdate' : 'mousemove', onMove);
 
   const button = (type) => (event) => {
-    if (!viewing() || event.button > 2) return;
+    if (!view || event.button > 2) return;
     event.preventDefault();
     $('stage').focus({ preventScroll: true });
     const pos = pointerPosition(event);
     if (!pos) return;
     queued = null;
-    control({ t: type, b: event.button, x: pos.x, y: pos.y });
+    sendTo(view, { t: type, b: event.button, x: pos.x, y: pos.y });
   };
   video.addEventListener('mousedown', button('d'));
   video.addEventListener('mouseup', button('u'));
@@ -959,9 +1204,9 @@ function setupViewerInput() {
   video.addEventListener(
     'wheel',
     (event) => {
-      if (!viewing()) return;
+      if (!view) return;
       event.preventDefault();
-      control({ t: 'w', dx: event.deltaX, dy: event.deltaY });
+      sendTo(view, { t: 'w', dx: event.deltaX, dy: event.deltaY });
     },
     { passive: false },
   );
@@ -969,7 +1214,7 @@ function setupViewerInput() {
   // Ctrl on a Windows keyboard and Cmd on a Mac keyboard do the same job, so
   // the main shortcut key is translated when the two sides differ.
   const translateCode = (code) => {
-    const hostIsMac = session.hostPlatform === 'darwin';
+    const hostIsMac = view.hostPlatform === 'darwin';
     const viewerIsMac = info.platform === 'darwin';
     if (viewerIsMac && !hostIsMac && code.startsWith('Meta')) return 'ControlLeft';
     if (!viewerIsMac && hostIsMac && code.startsWith('Control')) return 'MetaLeft';
@@ -977,27 +1222,27 @@ function setupViewerInput() {
   };
 
   const key = (down) => (event) => {
-    // Keys typed into the toolbar's own controls stay local.
-    if (!viewing() || (event.target instanceof Element && event.target.closest('.toolbar, #panel'))) return;
+    // Keys typed into FarDesk's own controls stay local.
+    if (!view || (event.target instanceof Element && event.target.closest('.toolbar, #panel'))) return;
     event.preventDefault();
     const plainText = event.key.length === 1 && !event.ctrlKey && !event.metaKey;
     if (plainText) {
-      if (down) control({ t: 't', ch: event.key });
+      if (down) sendTo(view, { t: 't', ch: event.key });
       return;
     }
-    control({ t: 'k', code: translateCode(event.code), down });
+    sendTo(view, { t: 'k', code: translateCode(event.code), down });
   };
   window.addEventListener('keydown', key(true), true);
   window.addEventListener('keyup', key(false), true);
   window.addEventListener('blur', () => {
-    if (viewing()) control({ t: 'release' });
+    if (view) sendTo(view, { t: 'release' });
   });
 
   $('viewer-quality').addEventListener('change', (event) => {
     prefs.quality = event.target.value;
     savePrefs();
     $('pref-quality').value = prefs.quality;
-    control({ t: 'quality', value: prefs.quality });
+    if (view) sendTo(view, { t: 'quality', value: prefs.quality });
     $('stage').focus();
   });
   $('viewer-scale').addEventListener('change', (event) => {
@@ -1046,6 +1291,14 @@ function setupSettings() {
   });
   bind('pref-files', 'change', (el) => {
     prefs.allowFiles = el.checked;
+  });
+  $('pref-sounds').checked = prefs.sounds;
+  bind('pref-sounds', 'change', (el) => {
+    prefs.sounds = el.checked;
+  });
+  $('pref-cursor-name').checked = prefs.cursorName;
+  bind('pref-cursor-name', 'change', (el) => {
+    prefs.cursorName = el.checked;
   });
   $('pref-background').checked = prefs.background;
   api.setBackground(prefs.background);
@@ -1154,15 +1407,8 @@ async function main() {
   $('copy-id').addEventListener('click', () => {
     if (myId) api.writeClipboard(myId);
   });
-  $('request-accept').addEventListener('click', () => {
-    if (!incoming) return;
-    $('request').hidden = true;
-    send({ type: 'answer', sessionId: incoming.sessionId, accept: true });
-  });
-  $('request-reject').addEventListener('click', () => {
-    if (!incoming) return;
-    send({ type: 'answer', sessionId: incoming.sessionId, accept: false });
-    closeRequest();
+  api.request.onAnswer((answer) => {
+    if (answer && typeof answer.sessionId === 'string') answerRequest(answer.sessionId, answer.accept === true);
   });
   $('password-box').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -1176,8 +1422,8 @@ async function main() {
     if (key && pending && pending.sessionId === sessionId) sendProof(key, $('password-remember').checked);
   });
   setupPanel();
-  $('hosting-stop').addEventListener('click', () => endSession(true));
-  $('viewer-stop').addEventListener('click', () => endSession(true));
+  $('hosting-stop').addEventListener('click', endAll);
+  $('viewer-stop').addEventListener('click', endAll);
   $('viewer-fullscreen').addEventListener('click', () => {
     if (document.fullscreenElement) document.exitFullscreen();
     else $('viewer').requestFullscreen().catch(() => {});
@@ -1192,8 +1438,9 @@ async function main() {
   }
 
   api.onClipboard((text) => {
-    if (session && (session.role === 'viewer' || prefs.allowClipboard)) control({ t: 'clip', text });
+    if (view || prefs.allowClipboard) control({ t: 'clip', text });
   });
+  setInterval(measurePings, PING_INTERVAL_MS);
   setupViewerInput();
   setupSettings();
   setupUpdates();
