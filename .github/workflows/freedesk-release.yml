@@ -28,7 +28,7 @@ env:
   FLUTTER_MACOS_ARM_VERSION: "3.44.9"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
-  VERSION: "1.5.3"
+  VERSION: "1.5.4"
   APP_NAME: "FreeDesk"
   APP_LOWER: "freedesk"
   # Public half of the update-signing key; the private seed is the

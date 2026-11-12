@@ -47,6 +47,13 @@ sub(cfg, 'pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];',
 sub(cfg, 'pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";',
     f'pub const RS_PUB_KEY: &str = "{SERVER_KEY}";')
 
+# --- fit the remote screen to the window by default on desktop --------------
+sub(cfg,
+    '            #[cfg(not(any(target_os = "android", target_os = "ios")))]\n'
+    '            keys::OPTION_VIEW_STYLE => self.get_string(key, "original", vec!["adaptive"]),',
+    '            #[cfg(not(any(target_os = "android", target_os = "ios")))]\n'
+    '            keys::OPTION_VIEW_STYLE => self.get_string(key, "adaptive", vec!["original"]),')
+
 # --- FreeDesk is its own stock client, not a RustDesk "custom client" -------
 common = "src/common.rs"
 sub(common, 'pub fn is_custom_client() -> bool {\n    get_app_name() != "RustDesk"\n}',
