@@ -1,0 +1,45 @@
+
+echo "==> Servisler baslatiliyor..."
+docker rm -f freedesk-signal freedesk-turn >/dev/null 2>&1 || true
+docker run -d --name freedesk-signal --restart unless-stopped \
+  -p "$SIGNAL_PORT:$SIGNAL_PORT" \
+  -v "$BASE/server:/app" -v "$BASE/data:/data" -w /app \
+  -e PORT="$SIGNAL_PORT" -e DATA_DIR=/data \
+  -e PUBLIC_HOST="$PUBLIC_IP" -e TURN_PORT="$TURN_PORT" -e TURN_SECRET="$TURN_SECRET" \
+  node:22-alpine sh -c "npm ci --omit=dev --no-audit --no-fund && exec node server.js"
+
+# Aktarma sunucusu yalnizca internet adreslerine aktarim yapar; sunucunun
+# kendi ic agina erisim icin kullanilamaz.
+docker run -d --name freedesk-turn --restart unless-stopped --net=host \
+  coturn/coturn:latest -n --log-file=stdout \
+  --listening-port="$TURN_PORT" --external-ip="$PUBLIC_IP" --realm=freedesk \
+  --use-auth-secret --static-auth-secret="$TURN_SECRET" \
+  --min-port="$RELAY_MIN" --max-port="$RELAY_MAX" \
+  --fingerprint --no-cli --no-tls --no-dtls --no-multicast-peers \
+  --denied-peer-ip=0.0.0.0-0.255.255.255 --denied-peer-ip=10.0.0.0-10.255.255.255 \
+  --denied-peer-ip=100.64.0.0-100.127.255.255 --denied-peer-ip=127.0.0.0-127.255.255.255 \
+  --denied-peer-ip=169.254.0.0-169.254.255.255 --denied-peer-ip=172.16.0.0-172.31.255.255 \
+  --denied-peer-ip=192.168.0.0-192.168.255.255
+
+echo "==> Guvenlik duvari portlari..."
+if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+  ufw allow "$SIGNAL_PORT/tcp"
+  ufw allow "$TURN_PORT/tcp"
+  ufw allow "$TURN_PORT/udp"
+  ufw allow "$RELAY_MIN:$RELAY_MAX/udp"
+fi
+
+HEALTH="yanit yok"
+for i in $(seq 1 60); do
+  if HEALTH="$(curl -fsS --max-time 3 "http://127.0.0.1:$SIGNAL_PORT/health" 2>/dev/null)"; then break; fi
+  HEALTH="yanit yok"
+  sleep 2
+done
+
+echo
+echo "============== FREEDESK YENI SUNUCU DURUMU =============="
+echo "SUNUCU: $PUBLIC_IP"
+echo "SINYAL: $HEALTH"
+echo "SERVISLER:"
+docker ps --filter name=freedesk- --format '  {{.Names}}: {{.Status}}'
+echo "========================================================="

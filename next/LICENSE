@@ -1,0 +1,10 @@
+Copyright (c) 2026 FreeDesk. Tüm hakları saklıdır. / All rights reserved.
+
+Bu klasördeki (next/) kaynak kod, deponun geri kalanından bağımsız olarak
+sıfırdan yazılmıştır ve AGPL kapsamındaki RustDesk kodundan türetilmemiştir.
+Yazılı izin olmadan kopyalanamaz, değiştirilemez veya dağıtılamaz.
+
+The source code in this folder (next/) was written from scratch, independently
+of the rest of this repository, and is not derived from the AGPL-licensed
+RustDesk code. It may not be copied, modified or distributed without written
+permission.

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' mediastream:; connect-src ws://185.233.247.38:21200 ws://127.0.0.1:*">
+<title>FreeDesk Beta</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="home" class="view">
+  <header class="top">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>FreeDesk <small>Beta</small></div>
+    <div id="status" class="status" data-state="connecting">Sunucuya bağlanıyor…</div>
+  </header>
+
+  <div id="update" class="notice" hidden>
+    <span id="update-text"></span>
+    <button id="update-button" class="primary small"></button>
+  </div>
+  <div id="permissions" class="notice warn" hidden>
+    <span id="permissions-text"></span>
+    <button id="permissions-button" class="small">Ayarları aç</button>
+  </div>
+
+  <section class="cards">
+    <div class="card">
+      <h2>Bu bilgisayar</h2>
+      <p class="hint">Bu bilgisayara bağlanacak kişiye aşağıdaki adresi verin.</p>
+      <div id="my-id" class="id">— — —</div>
+      <button id="copy-id" class="small" disabled>Adresi kopyala</button>
+    </div>
+    <div class="card">
+      <h2>Uzak bilgisayara bağlan</h2>
+      <p class="hint">Bağlanmak istediğiniz bilgisayarın adresini yazın.</p>
+      <form id="connect-form">
+        <input id="remote-id" inputmode="numeric" autocomplete="off" placeholder="000 000 000" maxlength="11" aria-label="Uzak bilgisayarın adresi">
+        <button id="connect-button" class="primary" type="submit" disabled>Bağlan</button>
+      </form>
+      <p id="connect-message" class="message" role="status"></p>
+    </div>
+  </section>
+
+  <div id="hosting" class="banner" hidden>
+    <span><strong id="hosting-peer"></strong> bu bilgisayara bağlı</span>
+    <button id="hosting-stop" class="danger small">Bağlantıyı kes</button>
+  </div>
+  <footer id="version" class="version"></footer>
+</main>
+
+<section id="viewer" class="view" hidden>
+  <div class="toolbar">
+    <span id="viewer-title"></span>
+    <span id="viewer-state" class="muted"></span>
+    <span class="spacer"></span>
+    <button id="viewer-fullscreen" class="small">Tam ekran</button>
+    <button id="viewer-stop" class="danger small">Bağlantıyı kes</button>
+  </div>
+  <div id="stage" class="stage" tabindex="0">
+    <video id="screen" autoplay playsinline muted></video>
+  </div>
+</section>
+
+<div id="request" class="overlay" hidden>
+  <div class="dialog" role="alertdialog" aria-labelledby="request-title">
+    <h2 id="request-title">Bağlantı isteği</h2>
+    <p><strong id="request-from"></strong> <span id="request-name"></span> bu bilgisayarın ekranını görmek ve kontrol etmek istiyor.</p>
+    <p class="hint">Yalnızca tanıdığınız ve güvendiğiniz kişilerin isteğini kabul edin.</p>
+    <div class="actions">
+      <button id="request-reject">Reddet</button>
+      <button id="request-accept" class="primary">Kabul et</button>
+    </div>
+  </div>
+</div>
+<script src="renderer.js"></script>
+</body>
+</html>

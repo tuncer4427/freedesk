@@ -1,0 +1,15 @@
+{
+  "name": "freedesk-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FreeDesk ID and signaling server",
+  "main": "server.js",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "ws": "^8.22.2"
+  }
+}

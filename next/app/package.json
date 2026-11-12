@@ -1,0 +1,75 @@
+{
+  "name": "freedesk-beta",
+  "productName": "FreeDesk Beta",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FreeDesk uzak masaüstü",
+  "author": "FreeDesk",
+  "license": "UNLICENSED",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/input.js && node --check src/renderer/renderer.js && node --check build/after-pack.js",
+    "dist:win": "electron-builder --win --x64 --publish never",
+    "dist:mac": "electron-builder --mac --arm64 --x64 --publish never"
+  },
+  "dependencies": {
+    "@jitsi/robotjs": "0.6.24",
+    "electron-updater": "6.8.11"
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.freedesk.beta",
+    "productName": "FreeDesk Beta",
+    "copyright": "Copyright © 2026 FreeDesk",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@jitsi/robotjs/**/*"
+    ],
+    "npmRebuild": false,
+    "afterPack": "build/after-pack.js",
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://github.com/tuncer4427/freedesk/releases/download/app-latest/"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "FreeDesk-Beta-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "shortcutName": "FreeDesk Beta"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "artifactName": "FreeDesk-Beta-${version}-mac-${arch}.${ext}",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "FreeDesk uzaktan kontrol için bu izne ihtiyaç duyar."
+      }
+    },
+    "dmg": {
+      "sign": false
+    }
+  }
+}
