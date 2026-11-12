@@ -1,15 +1,15 @@
 {
-  "name": "freedesk-beta",
-  "productName": "FreeDesk Beta",
-  "version": "0.2.0",
+  "name": "fardesk",
+  "productName": "FarDesk",
+  "version": "0.3.0",
   "private": true,
-  "description": "FreeDesk uzak masaüstü",
-  "author": "FreeDesk",
+  "description": "FarDesk uzak masaüstü",
+  "author": "FarDesk",
   "license": "UNLICENSED",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/input.js && node --check src/renderer/renderer.js && node --check build/after-pack.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/input.js && node --check src/access.js && node --check src/files.js && node --check src/renderer/renderer.js && node --check build/after-pack.js",
     "dist:win": "electron-builder --win --x64 --publish never",
     "dist:mac": "electron-builder --mac --arm64 --x64 --publish never"
   },
@@ -22,9 +22,9 @@
     "electron-builder": "26.18.0"
   },
   "build": {
-    "appId": "com.freedesk.beta",
-    "productName": "FreeDesk Beta",
-    "copyright": "Copyright © 2026 FreeDesk",
+    "appId": "com.fardesk.app",
+    "productName": "FarDesk",
+    "copyright": "Copyright © 2026 FarDesk",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -41,20 +41,20 @@
     "publish": [
       {
         "provider": "generic",
-        "url": "https://github.com/tuncer4427/freedesk/releases/download/app-latest/"
+        "url": "https://github.com/tuncer4427/freedesk/releases/download/fardesk-latest/"
       }
     ],
     "win": {
       "target": [
         "nsis"
       ],
-      "artifactName": "FreeDesk-Beta-${version}-win-${arch}.${ext}"
+      "artifactName": "FarDesk-${version}-win-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
       "runAfterFinish": true,
-      "shortcutName": "FreeDesk Beta"
+      "shortcutName": "FarDesk"
     },
     "mac": {
       "target": [
@@ -63,9 +63,10 @@
       ],
       "category": "public.app-category.utilities",
       "identity": null,
-      "artifactName": "FreeDesk-Beta-${version}-mac-${arch}.${ext}",
+      "artifactName": "FarDesk-${version}-mac-${arch}.${ext}",
       "extendInfo": {
-        "NSAppleEventsUsageDescription": "FreeDesk uzaktan kontrol için bu izne ihtiyaç duyar."
+        "NSAppleEventsUsageDescription": "FarDesk uzaktan kontrol için bu izne ihtiyaç duyar.",
+        "NSMicrophoneUsageDescription": "FarDesk sesli görüşme için mikrofonu kullanır."
       }
     },
     "dmg": {

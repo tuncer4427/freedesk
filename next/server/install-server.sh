@@ -101,7 +101,9 @@ const TURN_TTL_SECONDS = 6 * 60 * 60;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MAX_CONNECTS_PER_MINUTE = 12;
 const MAX_SOCKETS_PER_IP = 20;
-const REQUEST_TIMEOUT_MS = 60 * 1000;
+const REQUEST_TIMEOUT_MS = 90 * 1000;
+const MAX_AUTH_MESSAGES = 12;
+const MAX_AUTH_BYTES = 1024;
 const HEARTBEAT_MS = 30 * 1000;
 
 const DEVICES_FILE = path.join(DATA_DIR, 'devices.json');
@@ -213,7 +215,7 @@ const handlers = {
     // Same answer for "no such ID" and "offline", so IDs cannot be enumerated.
     if (!host) return send(socket, { type: 'error', code: 'unavailable' });
     const sessionId = crypto.randomBytes(16).toString('hex');
-    const session = { caller: socket, host, accepted: false, timer: null };
+    const session = { caller: socket, host, accepted: false, timer: null, authMessages: 0 };
     session.timer = setTimeout(() => endSession(sessionId, null, 'timeout'), REQUEST_TIMEOUT_MS);
     sessions.set(sessionId, session);
     socket.sessions.add(sessionId);
@@ -232,6 +234,19 @@ const handlers = {
     const ice = iceServers();
     send(session.caller, { type: 'accepted', sessionId: msg.sessionId, iceServers: ice });
     send(session.host, { type: 'start', sessionId: msg.sessionId, iceServers: ice });
+  },
+
+  // Password check between the two devices before the host has accepted.
+  // The server only forwards it; it never sees the password.
+  auth(socket, msg) {
+    const session = sessions.get(msg.sessionId);
+    if (!session || session.accepted) return;
+    const other = session.caller === socket ? session.host : session.host === socket ? session.caller : null;
+    if (!other || !msg.data || typeof msg.data !== 'object') return;
+    session.authMessages += 1;
+    if (session.authMessages > MAX_AUTH_MESSAGES) return;
+    if (JSON.stringify(msg.data).length > MAX_AUTH_BYTES) return;
+    send(other, { type: 'auth', sessionId: msg.sessionId, data: msg.data });
   },
 
   signal(socket, msg) {

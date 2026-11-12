@@ -84,6 +84,14 @@ async function main() {
   a.send({ type: 'connect', to: wb.id });
   const ringing2 = await a.next();
   const incoming2 = await b.next();
+  // Password messages are relayed both ways before acceptance, within limits.
+  b.send({ type: 'auth', sessionId: incoming2.sessionId, data: { kind: 'challenge', nonce: 'n' } });
+  assert.deepStrictEqual((await a.next()).data, { kind: 'challenge', nonce: 'n' });
+  a.send({ type: 'auth', sessionId: ringing2.sessionId, data: { kind: 'proof', proof: 'p' } });
+  assert.strictEqual((await b.next()).data.kind, 'proof');
+  a.send({ type: 'auth', sessionId: ringing2.sessionId, data: { big: 'x'.repeat(2000) } });
+  a.send({ type: 'auth', sessionId: ringing2.sessionId, data: 'text' });
+  assert.ok(await b.quiet());
   // Only the host may answer.
   a.send({ type: 'answer', sessionId: ringing2.sessionId, accept: true });
   assert.ok(await a.quiet());
@@ -92,6 +100,9 @@ async function main() {
   assert.strictEqual((await b.next()).type, 'start');
   a.send({ type: 'signal', sessionId: ringing2.sessionId, data: { sdp: 'x' } });
   assert.deepStrictEqual((await b.next()).data, { sdp: 'x' });
+  // No password messages once the session is accepted.
+  a.send({ type: 'auth', sessionId: ringing2.sessionId, data: { kind: 'proof' } });
+  assert.ok(await b.quiet());
   b.send({ type: 'signal', sessionId: ringing2.sessionId, data: { sdp: 'y' } });
   assert.deepStrictEqual((await a.next()).data, { sdp: 'y' });
 
@@ -101,6 +112,7 @@ async function main() {
   c.send({ type: 'hello', deviceKey: crypto.randomBytes(32).toString('hex') });
   await c.next();
   c.send({ type: 'signal', sessionId: ringing2.sessionId, data: { evil: true } });
+  c.send({ type: 'auth', sessionId: ringing2.sessionId, data: { evil: true } });
   c.send({ type: 'bye', sessionId: ringing2.sessionId });
   assert.ok(await a.quiet());
   assert.ok(await b.quiet());

@@ -1,15 +1,17 @@
 'use strict';
-const { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, screen, session, shell, systemPreferences } = require('electron');
+const { app, BrowserWindow, Menu, Tray, clipboard, desktopCapturer, ipcMain, nativeImage, screen, session, shell, systemPreferences } = require('electron');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const input = require('./input');
+const accessStore = require('./access');
+const fileStore = require('./files');
 
 const PRODUCTION_SERVER_URL = 'ws://185.233.247.38:21200';
 // A local server can be used while developing; packaged builds ignore it.
 const SERVER_URL = (!app.isPackaged && process.env.FREEDESK_SERVER) || PRODUCTION_SERVER_URL;
-const DOWNLOAD_PAGE = 'https://github.com/tuncer4427/freedesk/releases/tag/app-latest';
+const DOWNLOAD_PAGE = 'https://github.com/tuncer4427/freedesk/releases/tag/fardesk-latest';
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const CLIPBOARD_POLL_MS = 700;
 // Kept well under the data channel's message size limit.
@@ -20,6 +22,12 @@ let hosting = false;
 let clipboardTimer = null;
 let lastClipboardText = '';
 let updater = null;
+let tray = null;
+let quitting = false;
+// Closing the window keeps the app running in the tray, so the computer stays
+// reachable; the renderer turns this off when the user prefers a real exit.
+let keepRunning = true;
+const START_HIDDEN = process.argv.includes('--hidden');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -48,7 +56,9 @@ function createWindow() {
     minWidth: 720,
     minHeight: 520,
     backgroundColor: '#f4f6f8',
-    title: 'FreeDesk Beta',
+    title: 'FarDesk',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
+    show: !START_HIDDEN,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -61,9 +71,46 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  mainWindow.on('close', (event) => {
+    if (quitting || !keepRunning || !tray) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return createWindow();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function quitApp() {
+  quitting = true;
+  app.quit();
+}
+
+function createTray() {
+  try {
+    const image = nativeImage.createFromPath(path.join(__dirname, 'assets', 'tray.png')).resize({ width: 18, height: 18 });
+    tray = new Tray(image);
+    tray.setToolTip('FarDesk');
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: 'FarDesk’i aç', click: showWindow },
+        { type: 'separator' },
+        { label: 'Çıkış', click: quitApp },
+      ]),
+    );
+    tray.on('click', showWindow);
+  } catch (err) {
+    // Without a tray there is no way back to a hidden window, so closing quits.
+    tray = null;
+    console.error('tray unavailable:', err.message);
+  }
 }
 
 // --- clipboard sharing while a session is open ------------------------------
@@ -106,7 +153,10 @@ function setupUpdates() {
   });
   autoUpdater.on('error', (err) => console.error('update error:', err.message));
   ipcMain.on('update:install', () => {
-    if (canSelfUpdate) autoUpdater.quitAndInstall(true, true);
+    if (canSelfUpdate) {
+      quitting = true;
+      autoUpdater.quitAndInstall(true, true);
+    }
     else shell.openExternal(DOWNLOAD_PAGE);
   });
   updater = autoUpdater;
@@ -117,6 +167,54 @@ function setupUpdates() {
 
 // --- IPC ---------------------------------------------------------------------
 function setupIpc(deviceKey) {
+  const access = accessStore.create(path.join(app.getPath('userData'), 'access.json'));
+  const files = fileStore.create(() => path.join(app.getPath('downloads'), 'FarDesk'));
+  const received = new Set(); // paths this app saved, the only ones it will reveal
+
+  ipcMain.handle('access:status', () => ({ enabled: access.enabled(), minLength: accessStore.MIN_PASSWORD_LENGTH }));
+  ipcMain.handle('access:set', (_event, password) => access.set(password));
+  ipcMain.handle('access:clear', () => access.clear());
+  ipcMain.handle('access:challenge', (_event, sessionId) => access.challenge(sessionId));
+  ipcMain.handle('access:verify', (_event, sessionId, proof) => access.verify(sessionId, proof));
+  ipcMain.on('access:forget', (_event, sessionId) => access.forget(sessionId));
+  ipcMain.handle('access:derive', (_event, password, salt) => access.deriveKey(password, salt));
+  ipcMain.handle('access:answer', (_event, key, nonce, sessionId) => access.answer(key, nonce, sessionId));
+
+  ipcMain.handle('file:begin', (_event, id, name, size) => files.begin(id, name, size));
+  ipcMain.on('file:chunk', (_event, id, data) => files.chunk(id, data));
+  ipcMain.handle('file:end', async (_event, id) => {
+    const saved = await files.end(id);
+    if (saved) received.add(saved);
+    return saved;
+  });
+  ipcMain.on('file:abort', () => files.abortAll());
+  ipcMain.on('file:reveal', (_event, file) => {
+    if (received.has(file)) shell.showItemInFolder(file);
+  });
+
+  ipcMain.handle('mic:access', async () => {
+    if (process.platform !== 'darwin') return true;
+    return systemPreferences.askForMediaAccess('microphone');
+  });
+
+  ipcMain.on('app:background', (_event, enabled) => {
+    keepRunning = enabled === true;
+  });
+
+  ipcMain.handle('app:autostart', (_event, enabled) => {
+    if (!app.isPackaged) return false;
+    if (typeof enabled === 'boolean') app.setLoginItemSettings({ openAtLogin: enabled, args: ['--hidden'] });
+    return app.getLoginItemSettings({ args: ['--hidden'] }).openAtLogin;
+  });
+
+  ipcMain.on('app:attention', () => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFocused()) return;
+    if (!mainWindow.isVisible()) mainWindow.show();
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.flashFrame(true);
+    setTimeout(() => mainWindow && !mainWindow.isDestroyed() && mainWindow.flashFrame(false), 4000);
+  });
+
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
     platform: process.platform,
@@ -191,19 +289,17 @@ function setupIpc(deviceKey) {
   });
 }
 
-app.on('second-instance', () => {
-  if (!mainWindow) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.focus();
+app.on('second-instance', showWindow);
+app.on('before-quit', () => {
+  quitting = true;
 });
 
 app.whenReady().then(() => {
   setupIpc(loadDeviceKey());
+  createTray();
   createWindow();
   setupUpdates();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  app.on('activate', showWindow);
 });
 
 app.on('window-all-closed', () => {

@@ -3,13 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' mediastream:; connect-src ws://185.233.247.38:21200 ws://127.0.0.1:*">
-<title>FreeDesk Beta</title>
+<title>FarDesk</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div id="app">
+<div id="views">
 <main id="home" class="view">
   <header class="appbar">
-    <div class="brand"><span class="mark" aria-hidden="true"></span><span>FreeDesk</span><small>Beta</small></div>
+    <div class="brand"><img class="mark" src="../assets/icon.png" alt=""><span>FarDesk</span><small>Beta</small></div>
     <form id="connect-form" class="address">
       <span id="status" class="status" data-state="connecting" title="Sunucuya bağlanıyor…"></span>
       <input id="remote-id" inputmode="numeric" autocomplete="off" placeholder="Uzak adresi girin" maxlength="11" aria-label="Uzak bilgisayarın adresi">
@@ -22,6 +24,12 @@
 
   <div class="scroll">
     <p id="connect-message" class="message" role="status"></p>
+    <form id="password-box" class="notice" hidden>
+      <span>Bu bilgisayar parola ile de bağlanmaya izin veriyor.</span>
+      <input id="password-input" type="password" autocomplete="off" placeholder="Parola" maxlength="128" aria-label="Parola">
+      <label class="check"><input id="password-remember" type="checkbox"><span>Hatırla</span></label>
+      <button class="primary small" type="submit">Parola ile bağlan</button>
+    </form>
 
     <div id="update" class="notice" hidden>
       <span id="update-text"></span>
@@ -33,7 +41,10 @@
     </div>
     <div id="hosting" class="notice danger" hidden>
       <span><strong id="hosting-peer"></strong> bu bilgisayara bağlı</span>
-      <button id="hosting-stop" class="danger small">Bağlantıyı kes</button>
+      <span class="row">
+        <button id="hosting-panel" class="small">Sohbet ve dosya</button>
+        <button id="hosting-stop" class="danger small">Bağlantıyı kes</button>
+      </span>
     </div>
 
     <section class="hero">
@@ -65,6 +76,7 @@
   <div class="settings">
     <nav class="side">
       <button class="side-item" data-page="general" aria-current="page">Genel</button>
+      <button class="side-item" data-page="look">Görünüm</button>
       <button class="side-item" data-page="display">Görüntü</button>
       <button class="side-item" data-page="security">Güvenlik</button>
       <button class="side-item" data-page="about">Hakkında</button>
@@ -77,6 +89,15 @@
           <input id="pref-name" type="text" maxlength="40">
           <small>Bağlantı isteği gönderdiğinizde karşı tarafa gösterilir.</small>
         </label>
+        <div class="field">
+          <span>Çalışma</span>
+          <label class="check"><input id="pref-background" type="checkbox"><span>Pencere kapatılınca arka planda çalışmaya devam et</span></label>
+          <label class="check"><input id="pref-autostart" type="checkbox"><span>Bilgisayar açılınca FarDesk’i başlat</span></label>
+          <small>Bu bilgisayara parola ile bağlanılabilmesi için FarDesk’in çalışıyor olması gerekir. Tamamen kapatmak için sistem tepsisindeki FarDesk simgesinden Çıkış’ı seçin.</small>
+        </div>
+      </section>
+      <section class="page" data-page="look" hidden>
+        <h2>Görünüm</h2>
         <label class="field">
           <span>Tema</span>
           <select id="pref-theme">
@@ -85,6 +106,17 @@
             <option value="dark">Koyu</option>
           </select>
         </label>
+        <div class="field">
+          <span id="accent-label">Renk</span>
+          <div id="pref-accent" class="swatches" role="radiogroup" aria-labelledby="accent-label">
+            <button type="button" class="swatch" role="radio" data-accent="green" aria-label="Yeşil"></button>
+            <button type="button" class="swatch" role="radio" data-accent="blue" aria-label="Mavi"></button>
+            <button type="button" class="swatch" role="radio" data-accent="purple" aria-label="Mor"></button>
+            <button type="button" class="swatch" role="radio" data-accent="orange" aria-label="Turuncu"></button>
+            <button type="button" class="swatch" role="radio" data-accent="red" aria-label="Kırmızı"></button>
+            <button type="button" class="swatch" role="radio" data-accent="slate" aria-label="Gri"></button>
+          </div>
+        </div>
       </section>
       <section class="page" data-page="display" hidden>
         <h2>Görüntü</h2>
@@ -107,13 +139,26 @@
       </section>
       <section class="page" data-page="security" hidden>
         <h2>Güvenlik</h2>
-        <p class="hint">Bu bilgisayara bağlanan kişinin neler yapabileceğini belirler. Her bağlantı için ayrıca onayınız istenir.</p>
-        <label class="check"><input id="pref-control" type="checkbox"><span>Fare ve klavyeyi kontrol edebilsin</span></label>
-        <label class="check"><input id="pref-clipboard" type="checkbox"><span>Kopyala-yapıştır (pano) paylaşılsın</span></label>
+        <form id="access-form" class="field">
+          <span>Gözetimsiz erişim parolası</span>
+          <small id="access-status"></small>
+          <div class="row">
+            <input id="access-password" type="password" autocomplete="new-password" maxlength="128" placeholder="Yeni parola (en az 8 karakter)" aria-label="Yeni parola">
+            <button class="primary small" type="submit">Parolayı kaydet</button>
+            <button id="access-clear" class="small" type="button">Parolayı kaldır</button>
+          </div>
+          <small>Parolayı bilen kişi, bu program açıkken sizin onayınızı beklemeden bağlanabilir. Yalnızca güvendiğiniz kişilerle paylaşın.</small>
+        </form>
+        <div class="field">
+          <span>Bağlanan kişinin izinleri</span>
+          <label class="check"><input id="pref-control" type="checkbox"><span>Fare ve klavyeyi kontrol edebilsin</span></label>
+          <label class="check"><input id="pref-clipboard" type="checkbox"><span>Kopyala-yapıştır (pano) paylaşılsın</span></label>
+          <label class="check"><input id="pref-files" type="checkbox"><span>Bu bilgisayara dosya gönderebilsin</span></label>
+        </div>
       </section>
       <section class="page" data-page="about" hidden>
         <h2>Hakkında</h2>
-        <p><strong>FreeDesk Beta</strong> <span id="version"></span></p>
+        <p><strong>FarDesk</strong> <span id="version"></span></p>
         <p class="hint">Uzak masaüstü bağlantısı. Deneme sürümüdür.</p>
         <div class="row">
           <button id="check-update" class="small">Güncellemeleri denetle</button>
@@ -138,6 +183,7 @@
       <option value="fit">Sığdır</option>
       <option value="original">Özgün boyut</option>
     </select>
+    <button id="viewer-panel" class="small">Sohbet ve dosya</button>
     <button id="viewer-fullscreen" class="small">Tam ekran</button>
     <button id="viewer-stop" class="danger small">Bağlantıyı kes</button>
   </div>
@@ -145,6 +191,27 @@
     <video id="screen" autoplay playsinline muted></video>
   </div>
 </section>
+</div>
+
+<aside id="panel" hidden>
+  <header class="panel-head">
+    <strong id="panel-title">Oturum</strong>
+    <button id="panel-close" class="peer-action" title="Kapat" aria-label="Paneli kapat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+  </header>
+  <div class="panel-actions">
+    <button id="mic-toggle" class="small" aria-pressed="false">Mikrofonu aç</button>
+    <button id="file-send" class="small">Dosya gönder</button>
+    <input id="file-input" type="file" multiple hidden>
+  </div>
+  <p id="voice-state" class="hint panel-note" role="status"></p>
+  <div id="chat-log" class="chat-log" aria-live="polite"></div>
+  <form id="chat-form" class="chat-form">
+    <input id="chat-input" type="text" maxlength="2000" autocomplete="off" placeholder="Mesaj yazın" aria-label="Mesaj">
+    <button class="primary small" type="submit">Gönder</button>
+  </form>
+  <audio id="remote-audio" autoplay></audio>
+</aside>
+</div>
 
 <div id="request" class="overlay" hidden>
   <div class="dialog" role="alertdialog" aria-labelledby="request-title">

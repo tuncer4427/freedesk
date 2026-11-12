@@ -1,7 +1,7 @@
-name: FreeDesk Beta (new app)
+name: FarDesk (new app)
 
-# Builds the from-scratch FreeDesk app in next/ and publishes the installers
-# to the rolling "app-latest" pre-release, which is also the update feed the
+# Builds the from-scratch FarDesk app in next/ and publishes the installers
+# to the rolling "fardesk-latest" pre-release, which is also the update feed the
 # installed apps read.
 #
 # Trigger: push the commit to build to the `next-release` branch
@@ -88,10 +88,10 @@ jobs:
       - name: Publish installers
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
-          tag_name: app-latest
+          tag_name: fardesk-latest
           target_commitish: ${{ github.sha }}
-          name: FreeDesk Beta (yeni uygulama)
-          body: Sıfırdan yazılan yeni FreeDesk uygulamasının en güncel deneme sürümü.
+          name: FarDesk
+          body: FarDesk uygulamasının en güncel sürümü.
           prerelease: true
           fail_on_unmatched_files: false
           files: |
@@ -102,7 +102,7 @@ jobs:
       - name: Publish update pointers
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
-          tag_name: app-latest
+          tag_name: fardesk-latest
           prerelease: true
           fail_on_unmatched_files: false
           files: ./out/latest*.yml
