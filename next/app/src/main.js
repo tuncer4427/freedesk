@@ -138,7 +138,38 @@ function hideRequest() {
 // --- name tag next to the pointer --------------------------------------------
 // Shows who is moving the pointer on this computer. It never takes clicks or
 // focus, and disappears when the pointer rests or the session ends.
-function showCursorLabel(nx, ny, text) {
+// --- screens -----------------------------------------------------------------
+function listDisplays() {
+  const primaryId = screen.getPrimaryDisplay().id;
+  const all = screen.getAllDisplays();
+  // Main screen first, then left to right.
+  all.sort((a, b) => (a.id === primaryId ? -1 : b.id === primaryId ? 1 : a.bounds.x - b.bounds.x || a.bounds.y - b.bounds.y));
+  return all.map((display, index) => ({
+    id: String(display.id),
+    number: index + 1,
+    primary: display.id === primaryId,
+    label: typeof display.label === 'string' ? display.label.slice(0, 60) : '',
+    width: Math.round(display.size.width * display.scaleFactor),
+    height: Math.round(display.size.height * display.scaleFactor),
+  }));
+}
+
+function findDisplay(displayId) {
+  const all = screen.getAllDisplays();
+  return (typeof displayId === 'string' && all.find((d) => String(d.id) === displayId)) || screen.getPrimaryDisplay();
+}
+
+// Where a screen sits in the coordinates the input library uses: physical
+// pixels on Windows, points on macOS. The main screen keeps its original path.
+function inputArea(display) {
+  if (display.id === screen.getPrimaryDisplay().id) return null;
+  if (process.platform === 'win32' && typeof screen.dipToScreenRect === 'function') {
+    return screen.dipToScreenRect(null, display.bounds);
+  }
+  return display.bounds;
+}
+
+function showCursorLabel(nx, ny, text, display) {
   if (!Number.isFinite(nx) || !Number.isFinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
   const now = Date.now();
   if (now - lastLabelMove < LABEL_MOVE_INTERVAL_MS) return;
@@ -174,7 +205,7 @@ function showCursorLabel(nx, ny, text) {
       lastLabelText = text;
       if (!labelWindow.webContents.isLoading()) writeCursorLabel(text);
     }
-    const { bounds } = screen.getPrimaryDisplay();
+    const { bounds } = display || screen.getPrimaryDisplay();
     const x = Math.min(bounds.x + bounds.width - LABEL_SIZE.width, Math.round(bounds.x + nx * bounds.width + 14));
     const y = Math.min(bounds.y + bounds.height - LABEL_SIZE.height, Math.round(bounds.y + ny * bounds.height + 20));
     labelWindow.setBounds({ x, y, ...LABEL_SIZE });
@@ -375,12 +406,29 @@ function setupIpc(deviceKey) {
 
   // The page asks for the screen with getDisplayMedia; the primary display is
   // handed over without a picker because the user already approved the session.
+  // The renderer names the screen it wants just before asking for it.
+  let wantedDisplay = null;
+  ipcMain.handle('host:want-display', (_event, displayId) => {
+    wantedDisplay = typeof displayId === 'string' ? displayId : null;
+    return true;
+  });
+  ipcMain.handle('host:displays', () => listDisplays());
+  const displaysChanged = () => sendToWindow('host:displays-changed', listDisplays());
+  screen.on('display-added', displaysChanged);
+  screen.on('display-removed', displaysChanged);
+  screen.on('display-metrics-changed', displaysChanged);
+
   session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+    const wanted = wantedDisplay;
+    wantedDisplay = null;
     desktopCapturer
       .getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
       .then((sources) => {
-        const primary = screen.getPrimaryDisplay();
-        const source = sources.find((s) => s.display_id === String(primary.id)) || sources[0];
+        const primary = String(screen.getPrimaryDisplay().id);
+        const source =
+          (wanted && sources.find((s) => s.display_id === wanted)) ||
+          sources.find((s) => s.display_id === primary) ||
+          sources[0];
         if (source) callback({ video: source });
         else callback({});
       })
@@ -395,11 +443,12 @@ function setupIpc(deviceKey) {
     }
   });
 
-  ipcMain.on('host:input', (_event, msg, label) => {
+  ipcMain.on('host:input', (_event, msg, label, displayId) => {
     if (!hosting) return;
-    input.handle(msg);
+    const display = findDisplay(displayId);
+    input.handle(msg, inputArea(display));
     if (msg && (msg.t === 'm' || msg.t === 'd') && typeof label === 'string' && label) {
-      showCursorLabel(msg.x, msg.y, label.slice(0, 48));
+      showCursorLabel(msg.x, msg.y, label.slice(0, 48), display);
     }
   });
 

@@ -216,3 +216,11 @@ select, input[type="text"] { color: var(--text); background: var(--surface); bor
 #stage.drop-active::after { background: rgba(12, 143, 114, 0.25); color: #fff; }
 .hosting-chip { margin-bottom: 6px; white-space: nowrap; border-color: var(--danger); color: var(--danger); font-weight: 600; }
 .hosting-chip::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); margin-right: 7px; vertical-align: 1px; }
+
+/* choosing which of the remote computer's screens to show */
+.display-picker { display: flex; align-items: center; gap: 5px; }
+.display-picker .hint { margin-right: 2px; }
+.display-button { min-width: 34px; }
+.display-button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+
+.toolbar { flex-wrap: wrap; row-gap: 6px; }

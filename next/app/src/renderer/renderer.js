@@ -52,7 +52,9 @@ const views = new Map(); // sessionId -> link, remote screens open in tabs
 let active = null; // the remote screen on display (one of views)
 const hosted = new Map(); // sessionId -> link, the computers connected to this one
 const requests = new Map(); // sessionId -> incoming request waiting for a decision
-let capture = null; // the screen capture shared by all hosted links
+const captures = new Map(); // displayId -> screen capture shared by the links showing it
+let captureChain = Promise.resolve(); // one capture request at a time
+let displays = []; // this computer's screens, main screen first
 let mic = null; // this computer's microphone stream while voice is on
 let activeTab = 'recent';
 let prefs = null;
@@ -606,7 +608,7 @@ function bindChannel(link, channel) {
     if (!link.alive) return;
     if (link.role === 'host') {
       if (prefs.allowClipboard) api.syncClipboard(true);
-      sendTo(link, { t: 'hello', platform: info.platform, control: prefs.allowControl, name: prefs.name });
+      sendTo(link, { t: 'hello', platform: info.platform, control: prefs.allowControl, name: prefs.name, displays: displayInfo(), display: link.displayId });
       if (mic) sendTo(link, { t: 'voice', on: true });
     } else {
       api.syncClipboard(true);
@@ -628,14 +630,27 @@ function bindChannel(link, channel) {
         if (prefs.allowClipboard) api.writeClipboard(msg.text);
       } else if (msg.t === 'quality') {
         applyQuality(link, msg.value);
+      } else if (msg.t === 'display') {
+        switchDisplay(link, msg.id);
       } else if (prefs.allowControl) {
-        api.input(msg, prefs.cursorName ? linkLabel(link) : '');
+        api.input(msg, prefs.cursorName ? linkLabel(link) : '', link.displayId);
       }
     } else if (msg.t === 'clip') {
       // A screen in a background tab does not overwrite this clipboard.
       if (link === active) api.writeClipboard(msg.text);
+    } else if (msg.t === 'display') {
+      if (typeof msg.id === 'string') link.display = msg.id;
+      if (link === active) setViewerState(msg.failed ? 'Bu ekrana geçilemedi.' : link.watchOnly ? 'Yalnızca izleme' : '');
+      if (link === active) renderDisplays();
+    } else if (msg.t === 'displays') {
+      link.displays = cleanDisplays(msg.displays);
+      if (typeof msg.display === 'string') link.display = msg.display;
+      if (link === active) renderDisplays();
     } else if (msg.t === 'hello') {
       link.hostPlatform = msg.platform;
+      link.displays = cleanDisplays(msg.displays);
+      link.display = typeof msg.display === 'string' ? msg.display : '';
+      if (link === active) renderDisplays();
       link.watchOnly = msg.control === false;
       if (link.watchOnly && link === active) $('viewer-state').textContent = 'Yalnızca izleme';
     }
@@ -654,36 +669,78 @@ function bindPointer(link, channel) {
     } catch {
       return;
     }
-    if (link.alive && msg && msg.t === 'm' && prefs.allowControl) api.input(msg, prefs.cursorName ? linkLabel(link) : '');
+    if (link.alive && msg && msg.t === 'm' && prefs.allowControl) api.input(msg, prefs.cursorName ? linkLabel(link) : '', link.displayId);
   };
 }
 
 // --- host role ---------------------------------------------------------------
-// One screen capture is shared by every connected computer.
-function ensureCapture() {
-  if (!capture) {
-    const started = { stream: null, promise: null };
-    started.promise = navigator.mediaDevices
-      .getDisplayMedia({ audio: false, video: { frameRate: CAPTURE_FRAMERATE } })
+const mainDisplayId = () => (displays[0] ? displays[0].id : '');
+
+// One capture per screen, shared by every connected computer showing it.
+function ensureCapture(displayId) {
+  let started = captures.get(displayId);
+  if (!started) {
+    started = { stream: null, promise: null };
+    const entry = started;
+    // The screen to capture is named just before asking, so requests for
+    // different screens must not overlap.
+    entry.promise = captureChain = captureChain
+      .catch(() => {})
+      .then(() => api.wantDisplay(displayId))
+      .then(() => navigator.mediaDevices.getDisplayMedia({ audio: false, video: { frameRate: CAPTURE_FRAMERATE } }))
       .then((stream) => {
-        started.stream = stream;
-        // Everyone left while the capture was starting.
-        if (capture !== started) for (const track of stream.getTracks()) track.stop();
+        entry.stream = stream;
+        // Everyone left this screen while the capture was starting.
+        if (captures.get(displayId) !== entry) for (const track of stream.getTracks()) track.stop();
         return stream;
       })
       .catch((err) => {
-        if (capture === started) capture = null;
+        if (captures.get(displayId) === entry) captures.delete(displayId);
         throw err;
       });
-    capture = started;
+    captures.set(displayId, entry);
   }
-  return capture.promise;
+  return started.promise;
+}
+
+// Stops captures of screens nobody is looking at any more.
+function stopUnusedCaptures() {
+  const used = new Set([...hosted.values()].map((link) => link.displayId));
+  for (const [displayId, entry] of [...captures]) {
+    if (used.has(displayId)) continue;
+    captures.delete(displayId);
+    if (entry.stream) for (const track of entry.stream.getTracks()) track.stop();
+  }
 }
 
 function stopCapture() {
-  const ended = capture;
-  capture = null;
-  if (ended && ended.stream) for (const track of ended.stream.getTracks()) track.stop();
+  for (const entry of captures.values()) if (entry.stream) for (const track of entry.stream.getTracks()) track.stop();
+  captures.clear();
+}
+
+const displayInfo = () =>
+  displays.map((d) => ({ id: d.id, number: d.number, primary: d.primary, label: d.label, width: d.width, height: d.height }));
+
+// The viewer asked to see another screen of this computer.
+async function switchDisplay(link, displayId) {
+  if (typeof displayId !== 'string' || !displays.some((d) => d.id === displayId) || link.displayId === displayId) return;
+  const previous = link.displayId;
+  try {
+    const stream = await ensureCapture(displayId);
+    if (!link.alive) return;
+    const sender = link.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+    if (!sender) return;
+    await sender.replaceTrack(stream.getVideoTracks()[0]);
+    link.displayId = displayId;
+    applyQuality(link, link.quality);
+    sendTo(link, { t: 'display', id: displayId });
+  } catch (err) {
+    console.error('display switch failed', err);
+    link.displayId = previous;
+    sendTo(link, { t: 'display', id: previous, failed: true });
+  } finally {
+    stopUnusedCaptures();
+  }
 }
 
 function startHost(msg) {
@@ -691,13 +748,14 @@ function startHost(msg) {
   dropRequest(msg.sessionId);
   const link = createLink('host', request.sessionId, request.from, request.name, msg.iceServers);
   hosted.set(link.sessionId, link);
+  link.displayId = mainDisplayId();
   link.pc.ondatachannel = (event) => {
     if (event.channel.label === 'files') bindFiles(link, event.channel);
     else if (event.channel.label === 'pointer') bindPointer(link, event.channel);
     else bindChannel(link, event.channel);
   };
   // The viewer's offer may arrive first; it waits here until the screen is ready.
-  link.signals = ensureCapture()
+  link.signals = ensureCapture(link.displayId)
     .then((stream) => {
       if (link.alive) for (const track of stream.getTracks()) link.pc.addTrack(track, stream);
     })
@@ -788,6 +846,55 @@ async function startViewer(msg) {
   }
 }
 
+// --- the remote computer's screens --------------------------------------------
+function cleanDisplays(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .slice(0, 8)
+    .filter((d) => d && typeof d.id === 'string' && d.id.length <= 40)
+    .map((d, index) => ({
+      id: d.id,
+      number: Number.isInteger(d.number) ? d.number : index + 1,
+      primary: d.primary === true,
+      label: typeof d.label === 'string' ? d.label.slice(0, 60) : '',
+      width: Number.isInteger(d.width) ? d.width : 0,
+      height: Number.isInteger(d.height) ? d.height : 0,
+    }));
+}
+
+function setViewerState(text) {
+  $('viewer-state').textContent = text;
+}
+
+// One button per screen, shown only when the remote computer has more than one.
+function renderDisplays() {
+  const box = $('display-picker');
+  box.replaceChildren();
+  const list = active && active.displays ? active.displays : [];
+  box.hidden = list.length < 2;
+  if (list.length < 2) return;
+  const label = document.createElement('span');
+  label.className = 'hint';
+  label.textContent = 'Ekran:';
+  box.append(label);
+  for (const display of list) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'small display-button';
+    button.textContent = display.primary ? `${display.number} · Ana` : String(display.number);
+    const size = display.width && display.height ? ` (${display.width}×${display.height})` : '';
+    button.title = `${display.label || `Ekran ${display.number}`}${size}`;
+    button.setAttribute('aria-pressed', String(display.id === active.display));
+    button.addEventListener('click', () => {
+      if (!active || display.id === active.display) return;
+      setViewerState('Ekran değiştiriliyor…');
+      sendTo(active, { t: 'display', id: display.id });
+      $('stage').focus();
+    });
+    box.append(button);
+  }
+}
+
 // --- tabs: several remote screens at once ------------------------------------
 // Puts a tab's screen on display. Keyboard, mouse, chat, files, voice and the
 // clipboard all follow the screen on display; the others keep running.
@@ -802,8 +909,9 @@ function setActive(link, show) {
   active = link;
   $('screen').srcObject = link.stream || null;
   const connected = link.pc.connectionState === 'connected';
-  $('viewer-state').textContent = connected ? (link.watchOnly ? 'Yalnızca izleme' : '') : 'Bağlanıyor…';
+  setViewerState(connected ? (link.watchOnly ? 'Yalnızca izleme' : '') : 'Bağlanıyor…');
   renderTabs();
+  renderDisplays();
   updatePanelTarget();
   showVoiceState();
   if (show) {
@@ -959,6 +1067,7 @@ function endLink(link, notify) {
   } else {
     hosted.delete(link.sessionId);
     renderHosting();
+    stopUnusedCaptures();
     if (hosted.size === 0) {
       // Nobody watches this screen any more, even if this computer still
       // shows someone else's.
@@ -1362,10 +1471,10 @@ async function sendScreenshot() {
   try {
     if (viewingNow() && $('screen').videoWidth) {
       video = $('screen');
-    } else if (capture && capture.stream) {
+    } else if ([...captures.values()].some((entry) => entry.stream)) {
       temp = document.createElement('video');
       temp.muted = true;
-      temp.srcObject = capture.stream;
+      temp.srcObject = [...captures.values()].find((entry) => entry.stream).stream;
       await temp.play().catch(() => {});
       if (!temp.videoWidth) await new Promise((resolve) => temp.addEventListener('loadeddata', resolve, { once: true }));
       video = temp;
@@ -1792,6 +1901,18 @@ async function main() {
 
   api.onClipboard((text) => {
     for (const link of targets()) if (link.role === 'viewer' || prefs.allowClipboard) sendTo(link, { t: 'clip', text });
+  });
+  displays = await api.displays();
+  api.onDisplays((list) => {
+    displays = Array.isArray(list) ? list : [];
+    for (const link of hosted.values()) {
+      // A screen that went away: fall back to the main screen.
+      if (!displays.some((d) => d.id === link.displayId) && displays[0]) {
+        link.displayId = '';
+        switchDisplay(link, displays[0].id);
+      }
+      sendTo(link, { t: 'displays', displays: displayInfo(), display: link.displayId });
+    }
   });
   setInterval(measurePings, PING_INTERVAL_MS);
   setupViewerInput();

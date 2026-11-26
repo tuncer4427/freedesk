@@ -36,29 +36,38 @@ const buttonsDown = new Set();
 
 const unit = (value) => (Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : null);
 
-function moveTo(x, y) {
+// area: the screen being shown, in the input library's coordinates; without
+// one the main screen is used.
+function moveTo(x, y, area) {
   const nx = unit(x);
   const ny = unit(y);
   if (nx === null || ny === null) return;
-  const size = robot.getScreenSize();
-  const px = Math.round(nx * (size.width - 1));
-  const py = Math.round(ny * (size.height - 1));
+  let px;
+  let py;
+  if (area) {
+    px = Math.round(area.x + nx * (area.width - 1));
+    py = Math.round(area.y + ny * (area.height - 1));
+  } else {
+    const size = robot.getScreenSize();
+    px = Math.round(nx * (size.width - 1));
+    py = Math.round(ny * (size.height - 1));
+  }
   // macOS only delivers drags when the move is posted as a drag event.
   if (buttonsDown.size > 0 && process.platform === 'darwin') robot.dragMouse(px, py);
   else robot.moveMouse(px, py);
 }
 
-function handle(msg) {
+function handle(msg, area) {
   if (!robot || !msg || typeof msg !== 'object') return;
   switch (msg.t) {
     case 'm':
-      moveTo(msg.x, msg.y);
+      moveTo(msg.x, msg.y, area);
       break;
     case 'd':
     case 'u': {
       const button = BUTTONS[msg.b];
       if (!button) return;
-      moveTo(msg.x, msg.y);
+      moveTo(msg.x, msg.y, area);
       if (msg.t === 'd') buttonsDown.add(button);
       else buttonsDown.delete(button);
       robot.mouseToggle(msg.t === 'd' ? 'down' : 'up', button);
@@ -111,9 +120,9 @@ function releaseAll() {
   buttonsDown.clear();
 }
 
-function safeHandle(msg) {
+function safeHandle(msg, area) {
   try {
-    handle(msg);
+    handle(msg, area);
   } catch (err) {
     console.error('input error:', err.message);
   }
