@@ -106,3 +106,20 @@ jobs:
           prerelease: true
           fail_on_unmatched_files: false
           files: ./out/latest*.yml
+      # Keep the release tidy: installers of the newest two versions stay
+      # (the previous one helps smaller updates), older ones are removed.
+      - name: Remove old installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          names="$(gh release view fardesk-latest --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          keep="$(echo "$names" | sed -n 's/^FarDesk-\([0-9]*\.[0-9]*\.[0-9]*\)-.*/\1/p' | sort -u -V | tail -n 2)"
+          echo "Keeping versions:"; echo "$keep"
+          echo "$names" | while read -r name; do
+            version="$(echo "$name" | sed -n 's/^FarDesk-\([0-9]*\.[0-9]*\.[0-9]*\)-.*/\1/p')"
+            if [ -n "$version" ] && ! echo "$keep" | grep -qx "$version"; then
+              echo "Removing $name"
+              gh release delete-asset fardesk-latest "$name" --repo "$GITHUB_REPOSITORY" --yes
+            fi
+          done

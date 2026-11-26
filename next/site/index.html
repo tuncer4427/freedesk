@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FarDesk — Uzak masaüstü</title>
+<meta name="description" content="FarDesk ile uzaktaki bilgisayara güvenle bağlanın. Windows ve Mac için ücretsiz indirin.">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#0b7f8f">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#top" aria-label="FarDesk ana sayfa"><img src="logo.png" alt="" width="34" height="34">FarDesk</a>
+  <nav aria-label="Sayfa bölümleri">
+    <a href="#ozellikler">Özellikler</a>
+    <a href="#kurulum">Kurulum</a>
+    <a href="#indir" class="nav-cta">İndir</a>
+  </nav>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="hero-text">
+      <p class="eyebrow">Windows ve Mac için uzak masaüstü</p>
+      <h1>Uzaktaki bilgisayar,<br><span>yanınızdaymış gibi.</span></h1>
+      <p class="lead">Adresi yazın, karşı taraf onaylasın, ekranı görün ve kontrol edin. Sohbet, sesli görüşme ve dosya aktarımı da bağlantının içinde.</p>
+      <div class="cta">
+        <a id="primary-download" class="button primary" href="https://github.com/tuncer4427/freedesk/releases/tag/fardesk-latest">
+          <span class="button-icon" id="primary-icon" aria-hidden="true"></span>
+          <span><strong id="primary-label">FarDesk’i indir</strong><small id="primary-meta">Sürüm bilgisi alınıyor…</small></span>
+        </a>
+        <a class="button ghost" href="#indir">Diğer platformlar</a>
+      </div>
+      <p id="alt-download" class="alt" hidden></p>
+    </div>
+    <div class="hero-art" aria-hidden="true">
+      <div class="window back">
+        <div class="bar"><i></i><i></i><i></i></div>
+        <div class="screen"><div class="tile"></div><div class="tile"></div><div class="tile wide"></div></div>
+      </div>
+      <div class="window front">
+        <div class="bar"><i></i><i></i><i></i><b>FarDesk</b></div>
+        <div class="app">
+          <div class="addr"><span class="dot"></span>Uzak adresi girin<span class="go">Bağlan</span></div>
+          <div class="card">
+            <small>Bu bilgisayar</small>
+            <strong>482 913 507</strong>
+          </div>
+          <div class="chips"><span>Son oturumlar</span><span>Favoriler</span></div>
+          <div class="peers"><div></div><div></div><div></div></div>
+        </div>
+      </div>
+      <div class="pointer"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-6 1.5L10 20z"/></svg><span>Destek ekibi</span></div>
+    </div>
+  </section>
+
+  <section id="ozellikler" class="features">
+    <h2>İhtiyacınız olan her şey, tek pencerede</h2>
+    <div class="grid">
+      <article><div class="ico">#</div><h3>Adresle bağlanın</h3><p>Her bilgisayarın kalıcı 9 haneli bir adresi var. Adresi yazmanız yeterli.</p></article>
+      <article><div class="ico">✓</div><h3>Onaylı bağlantı</h3><p>Karşı taraf kabul etmeden hiçbir şey görülmez. İstek ekranın ortasında açılır.</p></article>
+      <article><div class="ico">⚿</div><h3>Parolayla erişim</h3><p>Kendi bilgisayarınıza, başında kimse olmadan parolanızla bağlanın.</p></article>
+      <article><div class="ico">❝</div><h3>Sohbet ve ses</h3><p>Bağlantı sırasında mesajlaşın, ekran görüntüsü yapıştırın, sesli konuşun.</p></article>
+      <article><div class="ico">⇅</div><h3>Dosya aktarımı</h3><p>Dosyaları sürükleyip bırakın; iki yönde, 4 GB’a kadar.</p></article>
+      <article><div class="ico">▣</div><h3>Birden fazla oturum</h3><p>Birkaç bilgisayarı sekmelerde açın, onaylı geçişle aralarında dolaşın.</p></article>
+      <article><div class="ico">⧉</div><h3>Çoklu ekran</h3><p>Karşı bilgisayarın ikinci, üçüncü ekranına tek tıkla geçin.</p></article>
+      <article><div class="ico">↻</div><h3>Kendiliğinden güncel</h3><p>Yeni sürüm çıktığında program haber verir; Windows’ta kendini günceller.</p></article>
+    </div>
+  </section>
+
+  <section id="indir" class="downloads">
+    <h2>İndir</h2>
+    <p class="sub" id="release-line">Sürüm bilgisi alınıyor…</p>
+    <div class="platforms">
+      <article class="platform" data-key="win">
+        <div class="os"><span class="os-icon win" aria-hidden="true"></span><div><h3>Windows</h3><p>Windows 10 ve 11 · 64 bit</p></div></div>
+        <a class="button primary small" data-download="win" href="https://github.com/tuncer4427/freedesk/releases/tag/fardesk-latest">İndir</a>
+        <p class="meta" data-meta="win"></p>
+      </article>
+      <article class="platform" data-key="mac-arm64">
+        <div class="os"><span class="os-icon mac" aria-hidden="true"></span><div><h3>Mac · Apple işlemci</h3><p>M1, M2, M3, M4 ve sonrası</p></div></div>
+        <a class="button primary small" data-download="mac-arm64" href="https://github.com/tuncer4427/freedesk/releases/tag/fardesk-latest">İndir</a>
+        <p class="meta" data-meta="mac-arm64"></p>
+      </article>
+      <article class="platform" data-key="mac-x64">
+        <div class="os"><span class="os-icon mac" aria-hidden="true"></span><div><h3>Mac · Intel işlemci</h3><p>2020 öncesi Mac’ler</p></div></div>
+        <a class="button primary small" data-download="mac-x64" href="https://github.com/tuncer4427/freedesk/releases/tag/fardesk-latest">İndir</a>
+        <p class="meta" data-meta="mac-x64"></p>
+      </article>
+    </div>
+    <p class="note" id="mac-hint">Mac’inizin işlemcisini öğrenmek için: sol üstteki Apple menüsü → Bu Mac Hakkında → “Çip” satırı Apple yazıyorsa Apple işlemci, “İşlemci” satırı Intel yazıyorsa Intel.</p>
+  </section>
+
+  <section id="kurulum" class="install">
+    <h2>Kurulum</h2>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-win" aria-controls="panel-win" aria-selected="true">Windows</button>
+      <button role="tab" id="tab-mac" aria-controls="panel-mac" aria-selected="false">Mac</button>
+    </div>
+    <div id="panel-win" role="tabpanel" aria-labelledby="tab-win" class="steps">
+      <ol>
+        <li><strong>İndirilen dosyayı açın.</strong> Dosya adı <code>FarDesk-…-win-x64.exe</code> şeklindedir.</li>
+        <li><strong>Uyarı çıkarsa “Ek bilgi” → “Yine de çalıştır”.</strong> Windows, yeni yayımlanan programlar için bu uyarıyı gösterir.</li>
+        <li><strong>Kurulum kendiliğinden tamamlanır</strong> ve FarDesk açılır. Sonraki sürümler otomatik gelir.</li>
+      </ol>
+    </div>
+    <div id="panel-mac" role="tabpanel" aria-labelledby="tab-mac" class="steps" hidden>
+      <ol>
+        <li><strong>İndirilen <code>.dmg</code> dosyasını açın</strong> ve FarDesk simgesini <em>Applications</em> klasörüne sürükleyin.</li>
+        <li><strong>Terminal’i açın ve şu komutu çalıştırın:</strong>
+          <div class="copy"><code id="mac-command">xattr -dr com.apple.quarantine /Applications/FarDesk.app</code><button type="button" id="copy-command">Kopyala</button></div>
+          Bu, macOS’un “açılmadı” uyarısını bu program için kaldırır. Terminal kullanmak istemezseniz: programı açmayı deneyin, uyarıda “Bitti” deyin, Sistem Ayarları → Gizlilik ve Güvenlik → “Yine de Aç”.
+        </li>
+        <li><strong>Uygulamalar klasöründen FarDesk’i açın.</strong> Başkasının bu Mac’e bağlanabilmesi için istenen Ekran Kaydı ve Erişilebilirlik izinlerini verin.</li>
+      </ol>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <span><img src="logo.png" alt="" width="20" height="20">FarDesk</span>
+  <span>© <span id="year">2026</span> FarDesk. Tüm hakları saklıdır.</span>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

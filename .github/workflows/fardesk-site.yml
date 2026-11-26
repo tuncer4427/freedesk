@@ -1,0 +1,75 @@
+name: FarDesk website
+
+# Uploads next/site to fardesk.veganet.com.tr over FTP whenever it changes.
+# The page reads the newest installers from GitHub itself, so new app
+# releases need no upload here.
+#
+# Needs the repository secrets FARDESK_FTP_USER and FARDESK_FTP_PASSWORD.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "next/site/**"
+      - ".github/workflows/fardesk-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fardesk-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    env:
+      FTP_HOST: 185.93.54.131
+      SITE_URL: http://fardesk.veganet.com.tr/
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check secrets
+        env:
+          FTP_USER: ${{ secrets.FARDESK_FTP_USER }}
+          FTP_PASSWORD: ${{ secrets.FARDESK_FTP_PASSWORD }}
+        run: |
+          if [ -z "$FTP_USER" ] || [ -z "$FTP_PASSWORD" ]; then
+            echo "::error::Add the FARDESK_FTP_USER and FARDESK_FTP_PASSWORD repository secrets."
+            exit 1
+          fi
+
+      - name: Install lftp
+        run: sudo apt-get update -q && sudo apt-get install -y -q lftp
+
+      - name: Upload
+        env:
+          FTP_USER: ${{ secrets.FARDESK_FTP_USER }}
+          FTP_PASSWORD: ${{ secrets.FARDESK_FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Encrypt the session when the server offers it. The certificate is
+          # not checked because shared hosts rarely have one for their IP.
+          settings="set ftp:ssl-allow true; set ssl:verify-certificate no; set net:max-retries 2; set net:timeout 30"
+          root="$(lftp -u "$FTP_USER","$FTP_PASSWORD" -e "$settings; cls -1 --classify; bye" "$FTP_HOST")"
+          echo "Server root:"; echo "$root"
+          target=.
+          for dir in public_html httpdocs www htdocs; do
+            if echo "$root" | grep -qx "$dir/"; then target="$dir"; break; fi
+          done
+          echo "Uploading to: $target"
+          lftp -u "$FTP_USER","$FTP_PASSWORD" -e "$settings; mirror -R --verbose --no-perms --exclude-glob .DS_Store next/site $target; bye" "$FTP_HOST"
+
+      - name: Check the live site
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 15 "$SITE_URL" | grep -q 'id="primary-download"'; then
+              echo "Site is live."; exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::The upload finished but $SITE_URL does not serve the new page yet (DNS or the site's folder may need a check)."
