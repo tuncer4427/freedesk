@@ -35,11 +35,14 @@ jobs:
 
       - name: Check secrets
         env:
-          FTP_USER: ${{ secrets.FARDESK_FTP_USER }}
+          FTP_USER: ${{ secrets.FARDESK_FTP_USER || vars.FARDESK_FTP_USER }}
           FTP_PASSWORD: ${{ secrets.FARDESK_FTP_PASSWORD }}
         run: |
-          if [ -z "$FTP_USER" ] || [ -z "$FTP_PASSWORD" ]; then
-            echo "::error::Add the FARDESK_FTP_USER and FARDESK_FTP_PASSWORD repository secrets."
+          missing=""
+          [ -n "$FTP_USER" ] || missing="$missing FARDESK_FTP_USER"
+          [ -n "$FTP_PASSWORD" ] || missing="$missing FARDESK_FTP_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing (Settings > Secrets and variables > Actions > Secrets tab > Repository secrets)."
             exit 1
           fi
 
@@ -48,7 +51,7 @@ jobs:
 
       - name: Upload
         env:
-          FTP_USER: ${{ secrets.FARDESK_FTP_USER }}
+          FTP_USER: ${{ secrets.FARDESK_FTP_USER || vars.FARDESK_FTP_USER }}
           FTP_PASSWORD: ${{ secrets.FARDESK_FTP_PASSWORD }}
         run: |
           set -euo pipefail
