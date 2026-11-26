@@ -18,6 +18,8 @@ const FILE_BUFFER_LIMIT = 4 * 1024 * 1024;
 const MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_PEERS = 24;
 const MAX_VIEWS = 6;
+const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
+const INLINE_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const MAX_HOSTED = 5;
 const MAX_REQUESTS = 5;
 const PING_INTERVAL_MS = 1000;
@@ -244,20 +246,25 @@ function send(message) {
   if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
 }
 
-// Every open connection: the remote screens open in tabs, or all the
-// computers currently connected to this one.
-const links = () => (views.size > 0 ? [...views.values()] : [...hosted.values()]);
+// Every open connection: the remote screens open in tabs and the computers
+// connected to this one. Both can be open at the same time.
+const links = () => [...views.values(), ...hosted.values()];
+const viewingNow = () => Boolean(active) && !$('viewer').hidden;
 // Where chat, files, voice and the clipboard go: the remote screen on
-// display, or everyone connected to this computer.
-const targets = () => (views.size > 0 ? (active ? [active] : []) : [...hosted.values()]);
+// display; otherwise everyone connected to this computer.
+const targets = () => {
+  if (viewingNow()) return [active];
+  if (hosted.size > 0) return [...hosted.values()];
+  return active ? [active] : [];
+};
 const findLink = (sessionId) => views.get(sessionId) || hosted.get(sessionId) || null;
 const linkLabel = (link) => link.name || formatId(link.peerId);
 const sessionTitle = (link) => (link.name ? `${link.name} · ${formatId(link.peerId)}` : formatId(link.peerId));
 // Who a message came from, when more than one computer could have sent it.
-const fromLabel = (link) => (link.role === 'host' || views.size > 1 ? linkLabel(link) : '');
+const fromLabel = (link) => (link.role === 'host' || links().length > 1 ? linkLabel(link) : '');
 
 function connectTo(id) {
-  if (id.length !== 9 || pending || hosted.size > 0 || !myId) return;
+  if (id.length !== 9 || pending || !myId) return;
   const open = [...views.values()].find((link) => link.peerId === id);
   if (open) {
     requestSwitch(open);
@@ -398,7 +405,7 @@ function onEnded(msg) {
 // Requests are shown one at a time in a small window in the middle of the
 // screen, so they are seen even when FarDesk itself is in the background.
 function onIncoming(msg) {
-  const busy = views.size > 0 || pending || requests.size >= MAX_REQUESTS || hosted.size >= MAX_HOSTED;
+  const busy = pending || requests.size >= MAX_REQUESTS || hosted.size >= MAX_HOSTED;
   if (busy) return send({ type: 'answer', sessionId: msg.sessionId, accept: false });
   const { sessionId } = msg;
   requests.set(sessionId, { sessionId, from: msg.from, name: typeof msg.name === 'string' ? msg.name.slice(0, 64) : '' });
@@ -700,12 +707,15 @@ function startHost(msg) {
       refreshPermissions(false);
     });
   api.setHosting(true);
-  if (hosted.size === 1) openPanel('Oturum', false);
+  if (links().length === 1) openPanel(false);
   addBubble('note', `${linkLabel(link)} bağlandı.`);
   renderHosting();
 }
 
 function renderHosting() {
+  $('hosting-chip').hidden = hosted.size === 0;
+  $('hosting-chip').textContent = hosted.size === 1 ? `${linkLabel([...hosted.values()][0])} bu bilgisayara bağlı` : `${hosted.size} kişi bu bilgisayara bağlı`;
+  updatePanelTarget();
   const box = $('hosting-list');
   box.replaceChildren();
   $('hosting').hidden = hosted.size === 0;
@@ -733,6 +743,7 @@ function renderHosting() {
 // --- viewer role -------------------------------------------------------------
 function showView(name) {
   for (const id of ['home', 'settings', 'viewer']) $(id).hidden = id !== name;
+  updatePanelTarget();
 }
 
 function applyScale(scale) {
@@ -764,7 +775,7 @@ async function startViewer(msg) {
   });
   $('viewer-quality').value = prefs.quality;
   applyScale(prefs.scale);
-  if (views.size === 1) openPanel(sessionTitle(link), true);
+  if (links().length === 1) openPanel(true);
   else addBubble('note', `${sessionTitle(link)} ile yeni oturum açıldı.`);
   setActive(link, true);
   try {
@@ -792,8 +803,8 @@ function setActive(link, show) {
   $('screen').srcObject = link.stream || null;
   const connected = link.pc.connectionState === 'connected';
   $('viewer-state').textContent = connected ? (link.watchOnly ? 'Yalnızca izleme' : '') : 'Bağlanıyor…';
-  $('panel-title').textContent = sessionTitle(link);
   renderTabs();
+  updatePanelTarget();
   showVoiceState();
   if (show) {
     showView('viewer');
@@ -944,11 +955,17 @@ function endLink(link, notify) {
       }
     }
     renderTabs();
-    if (views.size > 0) addBubble('note', `${sessionTitle(link)} oturumu kapandı.`);
+    if (links().length > 0) addBubble('note', `${sessionTitle(link)} oturumu kapandı.`);
   } else {
     hosted.delete(link.sessionId);
     renderHosting();
-    if (hosted.size > 0) addBubble('note', `${linkLabel(link)} ayrıldı.`);
+    if (hosted.size === 0) {
+      // Nobody watches this screen any more, even if this computer still
+      // shows someone else's.
+      api.setHosting(false);
+      stopCapture();
+    }
+    if (links().length > 0) addBubble('note', `${linkLabel(link)} ayrıldı.`);
   }
   try {
     link.pc.close();
@@ -963,6 +980,7 @@ function endLink(link, notify) {
     closePanel();
   } else {
     showVoiceState();
+    updatePanelTarget();
   }
 }
 
@@ -970,8 +988,8 @@ function endActive() {
   if (active) endLink(active, true);
 }
 
-function endAll() {
-  for (const link of links()) endLink(link, true);
+function endAllHosted() {
+  for (const link of [...hosted.values()]) endLink(link, true);
 }
 
 // --- connection quality ------------------------------------------------------
@@ -1030,8 +1048,13 @@ function clearBadges() {
   $('hosting-panel').classList.remove('badge');
 }
 
-function openPanel(title, quiet) {
-  $('panel-title').textContent = title;
+const imageUrls = [];
+function forgetImages() {
+  for (const url of imageUrls.splice(0)) URL.revokeObjectURL(url);
+}
+
+function openPanel(quiet) {
+  forgetImages();
   $('chat-log').replaceChildren();
   $('voice-state').textContent = '';
   setMicButton(false);
@@ -1041,6 +1064,7 @@ function openPanel(title, quiet) {
 
 function closePanel() {
   $('panel').hidden = true;
+  forgetImages();
   $('audios').replaceChildren();
   clearBadges();
 }
@@ -1051,6 +1075,26 @@ function togglePanel() {
   if (!$('panel').hidden) $('chat-input').focus();
   else if (active && !$('viewer').hidden) $('stage').focus();
 }
+
+function addImage(bubble, blob, onOpen) {
+  const url = URL.createObjectURL(blob);
+  imageUrls.push(url);
+  const img = document.createElement('img');
+  img.className = 'chat-image';
+  img.alt = 'Görüntü';
+  img.src = url;
+  if (onOpen) {
+    img.title = 'Klasörde göster';
+    img.addEventListener('click', onOpen);
+  }
+  img.addEventListener('load', () => {
+    const log = $('chat-log');
+    log.scrollTop = log.scrollHeight;
+  });
+  bubble.insertBefore(img, bubble.body);
+}
+
+const isInlineImage = (type, size) => INLINE_IMAGE_TYPES.includes(type) && size <= MAX_INLINE_IMAGE_BYTES;
 
 function addBubble(kind, text, from) {
   const bubble = document.createElement('div');
@@ -1083,12 +1127,28 @@ function notifyPanel() {
 }
 
 function showVoiceState() {
-  if (views.size > 0) {
-    $('voice-state').textContent = active && active.voice ? 'Karşı tarafın mikrofonu açık.' : '';
-    return;
+  const all = links();
+  const talking = all.filter((link) => link.voice);
+  if (talking.length === 0) $('voice-state').textContent = '';
+  else if (all.length === 1) $('voice-state').textContent = 'Karşı tarafın mikrofonu açık.';
+  else $('voice-state').textContent = `Mikrofonu açık: ${talking.map(linkLabel).join(', ')}`;
+}
+
+// Says where a message typed now will go, since that depends on which screen
+// is showing.
+function updatePanelTarget() {
+  const list = targets();
+  let text = '';
+  if (list.length > 0 && links().length > 1) {
+    text =
+      list[0].role === 'viewer'
+        ? `Mesajlar ve dosyalar: ${sessionTitle(list[0])}`
+        : list.length === 1
+          ? `Mesajlar ve dosyalar: bu bilgisayara bağlı ${linkLabel(list[0])}`
+          : `Mesajlar ve dosyalar: bu bilgisayara bağlı ${list.length} kişi`;
   }
-  const talking = [...hosted.values()].filter((link) => link.voice);
-  $('voice-state').textContent = talking.length === 0 ? '' : `Mikrofonu açık: ${talking.map(linkLabel).join(', ')}`;
+  $('panel-to').textContent = text;
+  $('panel-to').hidden = !text;
 }
 
 function onPanelMessage(link, msg) {
@@ -1117,11 +1177,11 @@ async function toggleMic() {
   if (targets().length === 0) return;
   if (mic) {
     stopMic();
-    for (const link of targets()) {
+    for (const link of links()) {
       const sender = audioSender(link);
       if (sender) await sender.replaceTrack(null).catch(() => {});
+      sendTo(link, { t: 'voice', on: false });
     }
-    control({ t: 'voice', on: false });
     return;
   }
   try {
@@ -1164,6 +1224,7 @@ async function onFileMessage(link, state, data) {
     const file = state.incoming;
     if (!file || !file.accepted) return;
     api.files.chunk(file.id, data);
+    if (file.parts) file.parts.push(data);
     file.received += data.byteLength;
     const now = performance.now();
     if (now - file.shown > 250) {
@@ -1190,7 +1251,8 @@ async function onFileMessage(link, state, data) {
     const saved = await api.files.begin(msg.id, name, msg.size);
     if (!saved) return refuse(`${name} alınamadı.`);
     const bubble = addBubble('theirs file', `${saved} alınıyor…`, fromLabel(link));
-    state.incoming = { id: msg.id, accepted: true, name: saved, size: msg.size, received: 0, shown: 0, bubble };
+    const image = typeof msg.image === 'string' && isInlineImage(msg.image, msg.size) ? msg.image : '';
+    state.incoming = { id: msg.id, accepted: true, name: saved, size: msg.size, received: 0, shown: 0, bubble, image, parts: image ? [] : null };
     notifyPanel();
   } else if (msg.t === 'done') {
     const file = state.incoming;
@@ -1202,6 +1264,7 @@ async function onFileMessage(link, state, data) {
       return;
     }
     file.bubble.body.textContent = `${file.name} alındı.`;
+    if (file.parts) addImage(file.bubble, new Blob(file.parts, { type: file.image }), () => api.files.reveal(savedPath));
     const reveal = document.createElement('button');
     reveal.type = 'button';
     reveal.textContent = 'Klasörde göster';
@@ -1233,9 +1296,11 @@ async function sendNextFile(link) {
     while (state.queue.length > 0 && usable()) {
       const file = state.queue.shift();
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
-      const to = hosted.size > 1 || views.size > 1 ? ` → ${linkLabel(link)}` : '';
+      const to = links().length > 1 ? ` → ${linkLabel(link)}` : '';
       const bubble = addBubble('mine file', `${file.name}${to} gönderiliyor…`);
-      state.channel.send(JSON.stringify({ t: 'file', id, name: file.name, size: file.size }));
+      const image = isInlineImage(file.type, file.size) ? file.type : undefined;
+      if (image) addImage(bubble, file);
+      state.channel.send(JSON.stringify({ t: 'file', id, name: file.name, size: file.size, image }));
       let sent = 0;
       let shown = 0;
       let ok = true;
@@ -1286,7 +1351,111 @@ async function sendNextFile(link) {
   }
 }
 
+const stamp = () => new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+
+// A picture of the screen on display: the remote screen when viewing one,
+// otherwise this computer's own screen as the connected people see it.
+async function sendScreenshot() {
+  if (targets().length === 0) return;
+  let video = null;
+  let temp = null;
+  try {
+    if (viewingNow() && $('screen').videoWidth) {
+      video = $('screen');
+    } else if (capture && capture.stream) {
+      temp = document.createElement('video');
+      temp.muted = true;
+      temp.srcObject = capture.stream;
+      await temp.play().catch(() => {});
+      if (!temp.videoWidth) await new Promise((resolve) => temp.addEventListener('loadeddata', resolve, { once: true }));
+      video = temp;
+    }
+    if (!video || !video.videoWidth) throw new Error('no picture');
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) throw new Error('encode failed');
+    queueFiles([new File([blob], `Ekran-goruntusu-${stamp()}.png`, { type: 'image/png' })]);
+  } catch (err) {
+    console.error('screenshot', err);
+    addBubble('note', 'Ekran görüntüsü alınamadı.');
+  } finally {
+    if (temp) temp.srcObject = null;
+  }
+}
+
+// Files dropped or pasted by the user. Folders cannot be sent.
+function sendGivenFiles(files, items) {
+  const list = [];
+  let skippedFolder = false;
+  files.forEach((file, index) => {
+    const entry = items && items[index] && items[index].webkitGetAsEntry ? items[index].webkitGetAsEntry() : null;
+    if (entry && entry.isDirectory) skippedFolder = true;
+    else list.push(file);
+  });
+  if (skippedFolder) addBubble('note', 'Klasörler gönderilemez; klasörün içindeki dosyaları seçip bırakın.');
+  if (list.length === 0) return;
+  if (targets().length === 0) {
+    addBubble('note', 'Dosya göndermek için açık bir bağlantı olmalı.');
+    return;
+  }
+  if ($('panel').hidden) togglePanel();
+  queueFiles(list);
+}
+
+function setupDropZones() {
+  const hasFiles = (event) => event.dataTransfer && [...event.dataTransfer.types].includes('Files');
+  // A file dropped anywhere else must not replace the app's page.
+  document.addEventListener('dragover', (event) => event.preventDefault());
+  document.addEventListener('drop', (event) => event.preventDefault());
+  for (const zone of [$('panel'), $('stage')]) {
+    let depth = 0;
+    zone.addEventListener('dragenter', (event) => {
+      if (!hasFiles(event) || targets().length === 0) return;
+      depth += 1;
+      zone.classList.add('drop-active');
+    });
+    zone.addEventListener('dragleave', () => {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) zone.classList.remove('drop-active');
+    });
+    zone.addEventListener('dragover', (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = targets().length > 0 ? 'copy' : 'none';
+    });
+    zone.addEventListener('drop', (event) => {
+      depth = 0;
+      zone.classList.remove('drop-active');
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      sendGivenFiles([...event.dataTransfer.files], [...event.dataTransfer.items].filter((item) => item.kind === 'file'));
+    });
+  }
+}
+
 function setupPanel() {
+  setupDropZones();
+  const pasteKey = info.platform === 'darwin' ? '⌘V' : 'Ctrl+V';
+  $('panel-hint').textContent = `Dosyaları buraya sürükleyip bırakabilir, kopyaladığınız ekran görüntüsünü ${pasteKey} ile yapıştırabilirsiniz.`;
+  $('screenshot-send').addEventListener('click', sendScreenshot);
+  // A picture on the clipboard, such as a screenshot, is sent as an image.
+  $('chat-input').addEventListener('paste', (event) => {
+    const images = [...(event.clipboardData ? event.clipboardData.items : [])]
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (images.length === 0) return;
+    event.preventDefault();
+    const files = images.map((file) => {
+      const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      return new File([file], `Ekran-goruntusu-${stamp()}.${ext}`, { type: file.type });
+    });
+    sendGivenFiles(files, null);
+  });
   $('viewer-panel').addEventListener('click', togglePanel);
   $('hosting-panel').addEventListener('click', togglePanel);
   $('panel-close').addEventListener('click', togglePanel);
@@ -1591,7 +1760,8 @@ async function main() {
     if (key && pending && pending.sessionId === sessionId) sendProof(key, $('password-remember').checked);
   });
   setupPanel();
-  $('hosting-stop').addEventListener('click', endAll);
+  $('hosting-stop').addEventListener('click', endAllHosted);
+  $('hosting-chip').addEventListener('click', () => showView('home'));
   $('viewer-stop').addEventListener('click', endActive);
   $('new-session').addEventListener('click', () => {
     showView('home');
@@ -1621,7 +1791,7 @@ async function main() {
   }
 
   api.onClipboard((text) => {
-    if (views.size > 0 || prefs.allowClipboard) control({ t: 'clip', text });
+    for (const link of targets()) if (link.role === 'viewer' || prefs.allowClipboard) sendTo(link, { t: 'clip', text });
   });
   setInterval(measurePings, PING_INTERVAL_MS);
   setupViewerInput();

@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' mediastream:; connect-src ws://185.233.247.38:21200 ws://127.0.0.1:*">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' mediastream:; connect-src ws://185.233.247.38:21200 ws://127.0.0.1:*">
 <title>FarDesk</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -180,6 +180,8 @@
   <div class="tabbar">
     <div id="tabs" class="session-tabs" role="tablist" aria-label="Açık oturumlar"></div>
     <button id="new-session" class="small" title="Başka bir bilgisayara bağlan">+ Yeni bağlantı</button>
+    <span class="spacer"></span>
+    <button id="hosting-chip" class="small hosting-chip" title="Bu bilgisayara bağlı olanları göster" hidden></button>
   </div>
   <div class="toolbar">
     <span id="viewer-state" class="hint"></span>
@@ -205,16 +207,19 @@
 
 <aside id="panel" hidden>
   <header class="panel-head">
-    <strong id="panel-title">Oturum</strong>
+    <strong id="panel-title">Sohbet ve dosya</strong>
     <button id="panel-close" class="peer-action" title="Kapat" aria-label="Paneli kapat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   </header>
   <div class="panel-actions">
     <button id="mic-toggle" class="small" aria-pressed="false">Mikrofonu aç</button>
     <button id="file-send" class="small">Dosya gönder</button>
+    <button id="screenshot-send" class="small" title="Ekrandaki görüntüyü sohbete gönder">Ekran görüntüsü</button>
     <input id="file-input" type="file" multiple hidden>
   </div>
+  <p id="panel-to" class="panel-to" hidden></p>
   <p id="voice-state" class="hint panel-note" role="status"></p>
   <div id="chat-log" class="chat-log" aria-live="polite"></div>
+  <p id="panel-hint" class="hint panel-hint"></p>
   <form id="chat-form" class="chat-form">
     <input id="chat-input" type="text" maxlength="2000" autocomplete="off" placeholder="Mesaj yazın" aria-label="Mesaj">
     <button class="primary small" type="submit">Gönder</button>
