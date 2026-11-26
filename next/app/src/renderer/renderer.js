@@ -17,6 +17,7 @@ const FILE_CHUNK_BYTES = 64 * 1024;
 const FILE_BUFFER_LIMIT = 4 * 1024 * 1024;
 const MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_PEERS = 24;
+const MAX_VIEWS = 6;
 const MAX_HOSTED = 5;
 const MAX_REQUESTS = 5;
 const PING_INTERVAL_MS = 1000;
@@ -45,7 +46,8 @@ let info = null;
 let socket = null;
 let myId = null;
 let pending = null; // an outgoing request waiting for an answer: { sessionId, to }
-let view = null; // the remote screen this window shows (a link), if any
+const views = new Map(); // sessionId -> link, remote screens open in tabs
+let active = null; // the remote screen on display (one of views)
 const hosted = new Map(); // sessionId -> link, the computers connected to this one
 const requests = new Map(); // sessionId -> incoming request waiting for a decision
 let capture = null; // the screen capture shared by all hosted links
@@ -84,6 +86,7 @@ function loadPrefs() {
     allowFiles: saved.allowFiles !== false,
     background: saved.background !== false,
     sounds: saved.sounds !== false,
+    confirmSwitch: saved.confirmSwitch !== false,
     cursorName: saved.cursorName !== false,
     allowControl: saved.allowControl !== false,
     allowClipboard: saved.allowClipboard !== false,
@@ -241,14 +244,29 @@ function send(message) {
   if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
 }
 
-// Every open connection: the one remote screen this window shows, or all the
+// Every open connection: the remote screens open in tabs, or all the
 // computers currently connected to this one.
-const links = () => (view ? [view] : [...hosted.values()]);
-const findLink = (sessionId) => (view && view.sessionId === sessionId ? view : hosted.get(sessionId) || null);
+const links = () => (views.size > 0 ? [...views.values()] : [...hosted.values()]);
+// Where chat, files, voice and the clipboard go: the remote screen on
+// display, or everyone connected to this computer.
+const targets = () => (views.size > 0 ? (active ? [active] : []) : [...hosted.values()]);
+const findLink = (sessionId) => views.get(sessionId) || hosted.get(sessionId) || null;
 const linkLabel = (link) => link.name || formatId(link.peerId);
+const sessionTitle = (link) => (link.name ? `${link.name} · ${formatId(link.peerId)}` : formatId(link.peerId));
+// Who a message came from, when more than one computer could have sent it.
+const fromLabel = (link) => (link.role === 'host' || views.size > 1 ? linkLabel(link) : '');
 
 function connectTo(id) {
-  if (id.length !== 9 || pending || view || hosted.size > 0 || !myId) return;
+  if (id.length !== 9 || pending || hosted.size > 0 || !myId) return;
+  const open = [...views.values()].find((link) => link.peerId === id);
+  if (open) {
+    requestSwitch(open);
+    return;
+  }
+  if (views.size >= MAX_VIEWS) {
+    setMessage(`Aynı anda en fazla ${MAX_VIEWS} oturum açık olabilir. Yeni bağlantı için birini kapatın.`);
+    return;
+  }
   $('remote-id').value = formatId(id);
   setMessage('Bağlanıyor…');
   send({ type: 'connect', to: id, name: prefs.name });
@@ -380,7 +398,7 @@ function onEnded(msg) {
 // Requests are shown one at a time in a small window in the middle of the
 // screen, so they are seen even when FarDesk itself is in the background.
 function onIncoming(msg) {
-  const busy = view || pending || requests.size >= MAX_REQUESTS || hosted.size >= MAX_HOSTED;
+  const busy = views.size > 0 || pending || requests.size >= MAX_REQUESTS || hosted.size >= MAX_HOSTED;
   if (busy) return send({ type: 'answer', sessionId: msg.sessionId, accept: false });
   const { sessionId } = msg;
   requests.set(sessionId, { sessionId, from: msg.from, name: typeof msg.name === 'string' ? msg.name.slice(0, 64) : '' });
@@ -507,7 +525,7 @@ function createLink(role, sessionId, peerId, name, iceServers) {
   });
   pc.onconnectionstatechange = () => {
     if (!link.alive) return;
-    if (pc.connectionState === 'connected' && role === 'viewer') $('viewer-state').textContent = link.watchOnly ? 'Yalnızca izleme' : '';
+    if (pc.connectionState === 'connected' && link === active) $('viewer-state').textContent = link.watchOnly ? 'Yalnızca izleme' : '';
     if (pc.connectionState === 'failed') {
       endLink(link, true);
       if (role === 'viewer') setMessage('Bağlantı kurulamadı. Ağ bu bağlantıya izin vermiyor olabilir.');
@@ -569,9 +587,10 @@ function sendTo(link, msg) {
   if (link.channel && link.channel.readyState === 'open') link.channel.send(JSON.stringify(msg));
 }
 
-// To the remote screen when viewing; to every connected computer when hosting.
+// To the remote screen on display when viewing; to every connected computer
+// when hosting.
 function control(msg) {
-  for (const link of links()) sendTo(link, msg);
+  for (const link of targets()) sendTo(link, msg);
 }
 
 function bindChannel(link, channel) {
@@ -585,6 +604,7 @@ function bindChannel(link, channel) {
     } else {
       api.syncClipboard(true);
       sendTo(link, { t: 'quality', value: prefs.quality });
+      if (mic && link === active) sendTo(link, { t: 'voice', on: true });
     }
   };
   channel.onmessage = (event) => {
@@ -605,11 +625,12 @@ function bindChannel(link, channel) {
         api.input(msg, prefs.cursorName ? linkLabel(link) : '');
       }
     } else if (msg.t === 'clip') {
-      api.writeClipboard(msg.text);
+      // A screen in a background tab does not overwrite this clipboard.
+      if (link === active) api.writeClipboard(msg.text);
     } else if (msg.t === 'hello') {
       link.hostPlatform = msg.platform;
       link.watchOnly = msg.control === false;
-      if (link.watchOnly) $('viewer-state').textContent = 'Yalnızca izleme';
+      if (link.watchOnly && link === active) $('viewer-state').textContent = 'Yalnızca izleme';
     }
   };
 }
@@ -726,7 +747,7 @@ async function startViewer(msg) {
   setMessage('');
   const known = loadPeers().find((p) => p.id === to);
   const link = createLink('viewer', sessionId, to, known ? known.name : '', msg.iceServers);
-  view = link;
+  views.set(sessionId, link);
   const { pc } = link;
   updatePeer(to, usedKey ? { last: Date.now(), key: usedKey.key, salt: usedKey.salt } : { last: Date.now() });
   bindChannel(link, pc.createDataChannel('control', { ordered: true }));
@@ -738,17 +759,14 @@ async function startViewer(msg) {
     if (event.track.kind !== 'video') return;
     // Show each frame as soon as it arrives rather than buffering for smoothness.
     if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0;
-    $('screen').srcObject = new MediaStream([event.track]);
+    link.stream = new MediaStream([event.track]);
+    if (link === active) $('screen').srcObject = link.stream;
   });
-  $('viewer-title').textContent = link.name ? `${link.name} · ${formatId(to)}` : formatId(to);
-  $('viewer-state').textContent = 'Bağlanıyor…';
-  link.pingLabel = $('viewer-ping');
-  showPing(link);
   $('viewer-quality').value = prefs.quality;
   applyScale(prefs.scale);
-  openPanel($('viewer-title').textContent, true);
-  showView('viewer');
-  $('stage').focus();
+  if (views.size === 1) openPanel(sessionTitle(link), true);
+  else addBubble('note', `${sessionTitle(link)} ile yeni oturum açıldı.`);
+  setActive(link, true);
   try {
     await pc.setLocalDescription(await pc.createOffer());
     send({ type: 'signal', sessionId, data: { sdp: pc.localDescription } });
@@ -757,6 +775,126 @@ async function startViewer(msg) {
     endLink(link, true);
     setMessage('Bağlantı kurulamadı.');
   }
+}
+
+// --- tabs: several remote screens at once ------------------------------------
+// Puts a tab's screen on display. Keyboard, mouse, chat, files, voice and the
+// clipboard all follow the screen on display; the others keep running.
+function setActive(link, show) {
+  const previous = active;
+  if (previous && previous !== link && previous.alive) {
+    sendTo(previous, { t: 'release' });
+    const thumb = captureThumb();
+    if (thumb) updatePeer(previous.peerId, { thumb });
+  }
+  if (mic && previous !== link) moveMic(previous && previous.alive ? previous : null, link);
+  active = link;
+  $('screen').srcObject = link.stream || null;
+  const connected = link.pc.connectionState === 'connected';
+  $('viewer-state').textContent = connected ? (link.watchOnly ? 'Yalnızca izleme' : '') : 'Bağlanıyor…';
+  $('panel-title').textContent = sessionTitle(link);
+  renderTabs();
+  showVoiceState();
+  if (show) {
+    showView('viewer');
+    $('stage').focus();
+  }
+}
+
+async function moveMic(from, to) {
+  const track = mic && mic.getAudioTracks()[0];
+  if (from) {
+    const sender = audioSender(from);
+    if (sender) await sender.replaceTrack(null).catch(() => {});
+    sendTo(from, { t: 'voice', on: false });
+  }
+  if (to && track) {
+    const sender = audioSender(to);
+    if (sender) await sender.replaceTrack(track).catch(() => {});
+    sendTo(to, { t: 'voice', on: true });
+  }
+}
+
+let switchTarget = null;
+
+// Switching asks first, so a stray click never moves the keyboard and mouse
+// to a different computer.
+function requestSwitch(link) {
+  if (!link.alive) return;
+  if (link === active) {
+    showView('viewer');
+    $('stage').focus();
+    return;
+  }
+  if (!prefs.confirmSwitch || !active) {
+    setActive(link, true);
+    return;
+  }
+  switchTarget = link;
+  $('switch-to').textContent = sessionTitle(link);
+  $('switch-from').textContent = sessionTitle(active);
+  $('switch-remember').checked = false;
+  $('switch-dialog').hidden = false;
+  $('switch-confirm').focus();
+}
+
+function closeSwitch(confirmed) {
+  const link = switchTarget;
+  switchTarget = null;
+  $('switch-dialog').hidden = true;
+  if (!confirmed || !link || !link.alive) {
+    if (active && !$('viewer').hidden) $('stage').focus();
+    return;
+  }
+  if ($('switch-remember').checked) {
+    prefs.confirmSwitch = false;
+    savePrefs();
+    $('pref-confirm-switch').checked = false;
+  }
+  setActive(link, true);
+}
+
+function renderTabs() {
+  const box = $('tabs');
+  box.replaceChildren();
+  for (const link of views.values()) {
+    const tab = document.createElement('div');
+    tab.className = 'session-tab';
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', String(link === active));
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'session-open';
+    open.title = link === active ? 'Şu an görüntülenen oturum' : 'Bu oturuma geç';
+    const name = document.createElement('span');
+    name.className = 'session-name';
+    name.textContent = sessionTitle(link);
+    const ping = document.createElement('span');
+    ping.className = 'ping';
+    link.pingLabel = ping;
+    open.append(name, ping);
+    open.addEventListener('click', () => requestSwitch(link));
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'session-close';
+    close.title = 'Bu oturumu kapat';
+    close.setAttribute('aria-label', `${sessionTitle(link)} oturumunu kapat`);
+    close.innerHTML = ICONS.remove;
+    close.addEventListener('click', () => endLink(link, true));
+    tab.append(open, close);
+    box.append(tab);
+    showPing(link);
+  }
+  $('new-session').disabled = views.size >= MAX_VIEWS;
+  renderSessionsBar();
+}
+
+// On the home screen, a way back to the sessions still open.
+function renderSessionsBar() {
+  $('sessions-bar').hidden = views.size === 0;
+  if (views.size === 0) return;
+  $('sessions-text').textContent =
+    views.size === 1 ? `${sessionTitle(active || [...views.values()][0])} ile oturum açık.` : `${views.size} oturum açık.`;
 }
 
 // A small picture of the remote screen for the list of known computers.
@@ -786,13 +924,27 @@ function endLink(link, notify) {
   if (notify) send({ type: 'bye', sessionId: link.sessionId });
   if (link.audio) link.audio.remove();
   if (link.role === 'viewer') {
-    const thumb = captureThumb();
-    if (thumb) updatePeer(link.peerId, { thumb });
+    const wasActive = link === active;
+    if (wasActive) {
+      const thumb = captureThumb();
+      if (thumb) updatePeer(link.peerId, { thumb });
+    }
     sendTo(link, { t: 'release' });
-    view = null;
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    $('screen').srcObject = null;
-    showView('home');
+    views.delete(link.sessionId);
+    if (wasActive) {
+      active = null;
+      $('screen').srcObject = null;
+      const next = [...views.values()].pop();
+      if (next) {
+        // Another tab takes over; the home or settings screen stays as it is.
+        setActive(next, !$('viewer').hidden);
+      } else {
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        if (!$('viewer').hidden) showView('home');
+      }
+    }
+    renderTabs();
+    if (views.size > 0) addBubble('note', `${sessionTitle(link)} oturumu kapandı.`);
   } else {
     hosted.delete(link.sessionId);
     renderHosting();
@@ -814,26 +966,37 @@ function endLink(link, notify) {
   }
 }
 
+function endActive() {
+  if (active) endLink(active, true);
+}
+
 function endAll() {
   for (const link of links()) endLink(link, true);
 }
 
 // --- connection quality ------------------------------------------------------
 function showPing(link) {
-  const label = link.pingLabel;
-  if (!label) return;
   const stale = performance.now() - link.lastPing > PING_STALE_MS;
   const state = link.pc.connectionState;
+  let text = '';
+  let level = '';
   if (link.ping === null || state === 'new' || state === 'connecting') {
-    label.textContent = '';
-    label.dataset.level = '';
+    // Not measured yet.
   } else if (stale || state === 'disconnected') {
-    label.textContent = 'Bağlantı zayıf';
-    label.dataset.level = 'bad';
+    text = 'Bağlantı zayıf';
+    level = 'bad';
   } else {
-    label.textContent = `${link.ping} ms`;
-    label.dataset.level = link.ping >= PING_BAD_MS ? 'bad' : link.ping >= PING_WARN_MS ? 'warn' : 'good';
-    label.title = link.relayed ? 'Gecikme (aktarma sunucusu üzerinden)' : 'Gecikme (doğrudan bağlantı)';
+    text = `${link.ping} ms`;
+    level = link.ping >= PING_BAD_MS ? 'bad' : link.ping >= PING_WARN_MS ? 'warn' : 'good';
+  }
+  const title = link.relayed ? 'Gecikme (aktarma sunucusu üzerinden)' : 'Gecikme (doğrudan bağlantı)';
+  const labels = [link.pingLabel];
+  if (link === active) labels.push($('viewer-ping'));
+  for (const label of labels) {
+    if (!label) continue;
+    label.textContent = text;
+    label.dataset.level = level;
+    label.title = title;
   }
 }
 
@@ -886,7 +1049,7 @@ function togglePanel() {
   $('panel').hidden = !$('panel').hidden;
   clearBadges();
   if (!$('panel').hidden) $('chat-input').focus();
-  else if (view) $('stage').focus();
+  else if (active && !$('viewer').hidden) $('stage').focus();
 }
 
 function addBubble(kind, text, from) {
@@ -920,18 +1083,17 @@ function notifyPanel() {
 }
 
 function showVoiceState() {
-  const talking = links().filter((link) => link.voice);
-  $('voice-state').textContent =
-    talking.length === 0
-      ? ''
-      : view
-        ? 'Karşı tarafın mikrofonu açık.'
-        : `Mikrofonu açık: ${talking.map(linkLabel).join(', ')}`;
+  if (views.size > 0) {
+    $('voice-state').textContent = active && active.voice ? 'Karşı tarafın mikrofonu açık.' : '';
+    return;
+  }
+  const talking = [...hosted.values()].filter((link) => link.voice);
+  $('voice-state').textContent = talking.length === 0 ? '' : `Mikrofonu açık: ${talking.map(linkLabel).join(', ')}`;
 }
 
 function onPanelMessage(link, msg) {
   if (msg.t === 'chat' && typeof msg.text === 'string' && msg.text) {
-    addBubble('theirs', msg.text.slice(0, MAX_CHAT_CHARS), link.role === 'host' ? linkLabel(link) : '');
+    addBubble('theirs', msg.text.slice(0, MAX_CHAT_CHARS), fromLabel(link));
     messageSound();
     notifyPanel();
   } else if (msg.t === 'voice') {
@@ -952,10 +1114,10 @@ const audioSender = (link) => {
 };
 
 async function toggleMic() {
-  if (links().length === 0) return;
+  if (targets().length === 0) return;
   if (mic) {
     stopMic();
-    for (const link of links()) {
+    for (const link of targets()) {
       const sender = audioSender(link);
       if (sender) await sender.replaceTrack(null).catch(() => {});
     }
@@ -967,12 +1129,12 @@ async function toggleMic() {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-    if (links().length === 0 || mic) {
+    if (targets().length === 0 || mic) {
       for (const track of stream.getTracks()) track.stop();
       return;
     }
     mic = stream;
-    for (const link of links()) {
+    for (const link of targets()) {
       const sender = audioSender(link);
       if (sender) await sender.replaceTrack(stream.getAudioTracks()[0]).catch(() => {});
     }
@@ -1027,7 +1189,7 @@ async function onFileMessage(link, state, data) {
     const name = String(msg.name).slice(0, 255);
     const saved = await api.files.begin(msg.id, name, msg.size);
     if (!saved) return refuse(`${name} alınamadı.`);
-    const bubble = addBubble('theirs file', `${saved} alınıyor…`, link.role === 'host' ? linkLabel(link) : '');
+    const bubble = addBubble('theirs file', `${saved} alınıyor…`, fromLabel(link));
     state.incoming = { id: msg.id, accepted: true, name: saved, size: msg.size, received: 0, shown: 0, bubble };
     notifyPanel();
   } else if (msg.t === 'done') {
@@ -1057,9 +1219,9 @@ function queueFiles(fileList) {
       addBubble('note', `${file.name} çok büyük (en fazla 4 GB).`);
       continue;
     }
-    for (const link of links()) if (link.files) link.files.queue.push(file);
+    for (const link of targets()) if (link.files) link.files.queue.push(file);
   }
-  for (const link of links()) if (link.files) sendNextFile(link);
+  for (const link of targets()) if (link.files) sendNextFile(link);
 }
 
 async function sendNextFile(link) {
@@ -1071,7 +1233,7 @@ async function sendNextFile(link) {
     while (state.queue.length > 0 && usable()) {
       const file = state.queue.shift();
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
-      const to = hosted.size > 1 ? ` → ${linkLabel(link)}` : '';
+      const to = hosted.size > 1 || views.size > 1 ? ` → ${linkLabel(link)}` : '';
       const bubble = addBubble('mine file', `${file.name}${to} gönderiliyor…`);
       state.channel.send(JSON.stringify({ t: 'file', id, name: file.name, size: file.size }));
       let sent = 0;
@@ -1137,7 +1299,7 @@ function setupPanel() {
   $('chat-form').addEventListener('submit', (event) => {
     event.preventDefault();
     const text = $('chat-input').value.trim().slice(0, MAX_CHAT_CHARS);
-    if (!text || !links().some((link) => link.channel && link.channel.readyState === 'open')) return;
+    if (!text || !targets().some((link) => link.channel && link.channel.readyState === 'open')) return;
     control({ t: 'chat', text });
     addBubble('mine', text);
     $('chat-input').value = '';
@@ -1167,17 +1329,17 @@ function setupViewerInput() {
 
   const flushMove = () => {
     moveTimer = null;
-    if (!queued || !view) return;
+    if (!queued || !active) return;
     const msg = JSON.stringify({ t: 'm', x: queued.x, y: queued.y });
     queued = null;
     lastMove = performance.now();
-    const pointer = view.pointer;
+    const pointer = active.pointer;
     if (pointer && pointer.readyState === 'open') pointer.send(msg);
-    else if (view.channel && view.channel.readyState === 'open') view.channel.send(msg);
+    else if (active.channel && active.channel.readyState === 'open') active.channel.send(msg);
   };
 
   const onMove = (event) => {
-    if (!view) return;
+    if (!active) return;
     const pos = pointerPosition(event);
     if (!pos) return;
     queued = pos;
@@ -1190,13 +1352,13 @@ function setupViewerInput() {
   video.addEventListener('onpointerrawupdate' in video ? 'pointerrawupdate' : 'mousemove', onMove);
 
   const button = (type) => (event) => {
-    if (!view || event.button > 2) return;
+    if (!active || event.button > 2) return;
     event.preventDefault();
     $('stage').focus({ preventScroll: true });
     const pos = pointerPosition(event);
     if (!pos) return;
     queued = null;
-    sendTo(view, { t: type, b: event.button, x: pos.x, y: pos.y });
+    sendTo(active, { t: type, b: event.button, x: pos.x, y: pos.y });
   };
   video.addEventListener('mousedown', button('d'));
   video.addEventListener('mouseup', button('u'));
@@ -1204,9 +1366,9 @@ function setupViewerInput() {
   video.addEventListener(
     'wheel',
     (event) => {
-      if (!view) return;
+      if (!active) return;
       event.preventDefault();
-      sendTo(view, { t: 'w', dx: event.deltaX, dy: event.deltaY });
+      sendTo(active, { t: 'w', dx: event.deltaX, dy: event.deltaY });
     },
     { passive: false },
   );
@@ -1214,7 +1376,7 @@ function setupViewerInput() {
   // Ctrl on a Windows keyboard and Cmd on a Mac keyboard do the same job, so
   // the main shortcut key is translated when the two sides differ.
   const translateCode = (code) => {
-    const hostIsMac = view.hostPlatform === 'darwin';
+    const hostIsMac = active.hostPlatform === 'darwin';
     const viewerIsMac = info.platform === 'darwin';
     if (viewerIsMac && !hostIsMac && code.startsWith('Meta')) return 'ControlLeft';
     if (!viewerIsMac && hostIsMac && code.startsWith('Control')) return 'MetaLeft';
@@ -1222,27 +1384,30 @@ function setupViewerInput() {
   };
 
   const key = (down) => (event) => {
-    // Keys typed into FarDesk's own controls stay local.
-    if (!view || (event.target instanceof Element && event.target.closest('.toolbar, #panel'))) return;
+    // Keys typed into FarDesk's own controls, or pressed while the remote
+    // screen is not on display, stay local.
+    if (!active || $('viewer').hidden || !$('switch-dialog').hidden) return;
+    if (event.target instanceof Element && event.target.closest('.toolbar, #panel')) return;
     event.preventDefault();
     const plainText = event.key.length === 1 && !event.ctrlKey && !event.metaKey;
     if (plainText) {
-      if (down) sendTo(view, { t: 't', ch: event.key });
+      if (down) sendTo(active, { t: 't', ch: event.key });
       return;
     }
-    sendTo(view, { t: 'k', code: translateCode(event.code), down });
+    sendTo(active, { t: 'k', code: translateCode(event.code), down });
   };
   window.addEventListener('keydown', key(true), true);
   window.addEventListener('keyup', key(false), true);
   window.addEventListener('blur', () => {
-    if (view) sendTo(view, { t: 'release' });
+    if (active) sendTo(active, { t: 'release' });
   });
 
   $('viewer-quality').addEventListener('change', (event) => {
     prefs.quality = event.target.value;
     savePrefs();
     $('pref-quality').value = prefs.quality;
-    if (view) sendTo(view, { t: 'quality', value: prefs.quality });
+    // The picture setting applies to every open screen.
+    for (const link of views.values()) sendTo(link, { t: 'quality', value: prefs.quality });
     $('stage').focus();
   });
   $('viewer-scale').addEventListener('change', (event) => {
@@ -1291,6 +1456,10 @@ function setupSettings() {
   });
   bind('pref-files', 'change', (el) => {
     prefs.allowFiles = el.checked;
+  });
+  $('pref-confirm-switch').checked = prefs.confirmSwitch;
+  bind('pref-confirm-switch', 'change', (el) => {
+    prefs.confirmSwitch = el.checked;
   });
   $('pref-sounds').checked = prefs.sounds;
   bind('pref-sounds', 'change', (el) => {
@@ -1423,7 +1592,21 @@ async function main() {
   });
   setupPanel();
   $('hosting-stop').addEventListener('click', endAll);
-  $('viewer-stop').addEventListener('click', endAll);
+  $('viewer-stop').addEventListener('click', endActive);
+  $('new-session').addEventListener('click', () => {
+    showView('home');
+    $('remote-id').value = '';
+    $('remote-id').dispatchEvent(new Event('input', { bubbles: true }));
+    $('remote-id').focus();
+  });
+  $('sessions-return').addEventListener('click', () => {
+    if (active) requestSwitch(active);
+  });
+  $('switch-confirm').addEventListener('click', () => closeSwitch(true));
+  $('switch-cancel').addEventListener('click', () => closeSwitch(false));
+  $('switch-dialog').addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeSwitch(false);
+  });
   $('viewer-fullscreen').addEventListener('click', () => {
     if (document.fullscreenElement) document.exitFullscreen();
     else $('viewer').requestFullscreen().catch(() => {});
@@ -1438,7 +1621,7 @@ async function main() {
   }
 
   api.onClipboard((text) => {
-    if (view || prefs.allowClipboard) control({ t: 'clip', text });
+    if (views.size > 0 || prefs.allowClipboard) control({ t: 'clip', text });
   });
   setInterval(measurePings, PING_INTERVAL_MS);
   setupViewerInput();

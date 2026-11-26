@@ -11,7 +11,7 @@
 <div id="views">
 <main id="home" class="view">
   <header class="appbar">
-    <div class="brand"><img class="mark" src="../assets/icon.png" alt=""><span>FarDesk</span><small>Beta</small></div>
+    <div class="brand"><img class="mark" src="../assets/icon.png" alt=""><span>FarDesk</span></div>
     <form id="connect-form" class="address">
       <span id="status" class="status" data-state="connecting" title="Sunucuya bağlanıyor…"></span>
       <input id="remote-id" inputmode="numeric" autocomplete="off" placeholder="Uzak adresi girin" maxlength="11" aria-label="Uzak bilgisayarın adresi">
@@ -38,6 +38,10 @@
     <div id="permissions" class="notice warn" hidden>
       <span id="permissions-text"></span>
       <button id="permissions-button" class="small">Ayarları aç</button>
+    </div>
+    <div id="sessions-bar" class="notice" hidden>
+      <span id="sessions-text"></span>
+      <button id="sessions-return" class="primary small">Oturuma dön</button>
     </div>
     <div id="hosting" class="notice danger" hidden>
       <div id="hosting-list" class="hosting-list"></div>
@@ -91,6 +95,7 @@
         </label>
         <div class="field">
           <span>Çalışma</span>
+          <label class="check"><input id="pref-confirm-switch" type="checkbox"><span>Açık oturumlar arasında geçerken onay iste</span></label>
           <label class="check"><input id="pref-sounds" type="checkbox"><span>Mesaj ve bağlantı isteği geldiğinde ses çal</span></label>
           <label class="check"><input id="pref-background" type="checkbox"><span>Pencere kapatılınca arka planda çalışmaya devam et</span></label>
           <label class="check"><input id="pref-autostart" type="checkbox"><span>Bilgisayar açılınca FarDesk’i başlat</span></label>
@@ -172,9 +177,11 @@
 </section>
 
 <section id="viewer" class="view" hidden>
+  <div class="tabbar">
+    <div id="tabs" class="session-tabs" role="tablist" aria-label="Açık oturumlar"></div>
+    <button id="new-session" class="small" title="Başka bir bilgisayara bağlan">+ Yeni bağlantı</button>
+  </div>
   <div class="toolbar">
-    <strong id="viewer-title"></strong>
-    <span id="viewer-ping" class="ping" role="status"></span>
     <span id="viewer-state" class="hint"></span>
     <span class="spacer"></span>
     <select id="viewer-quality" class="small" aria-label="Görüntü kalitesi">
@@ -216,6 +223,17 @@
 </aside>
 </div>
 
+<div id="switch-dialog" class="overlay" hidden>
+  <div class="dialog" role="alertdialog" aria-labelledby="switch-title" aria-describedby="switch-text">
+    <h2 id="switch-title">Oturum değiştirilsin mi?</h2>
+    <p id="switch-text"><strong id="switch-to"></strong> ekranına geçilecek. Klavye, fare, sohbet ve dosya gönderimi bu bilgisayara yönelecek; <span id="switch-from"></span> oturumu arka planda açık kalır.</p>
+    <label class="check"><input id="switch-remember" type="checkbox"><span>Bir daha sorma</span></label>
+    <div class="actions">
+      <button id="switch-cancel">Vazgeç</button>
+      <button id="switch-confirm" class="primary">Geç</button>
+    </div>
+  </div>
+</div>
 <script src="renderer.js"></script>
 </body>
 </html>

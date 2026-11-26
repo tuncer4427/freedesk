@@ -184,3 +184,19 @@ select, input[type="text"] { color: var(--text); background: var(--surface); bor
 .request-head h2 { font-size: 16px; flex: 1; }
 .request-card .actions { margin-top: auto; }
 .request-card button { -webkit-app-region: no-drag; }
+
+/* tabs for several remote screens */
+.tabbar { display: flex; align-items: center; gap: 8px; padding: 7px 12px 0; background: var(--bg); border-bottom: 1px solid var(--line); }
+.session-tabs { display: flex; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.session-tabs::-webkit-scrollbar { display: none; }
+.tabbar #new-session { margin-bottom: 6px; white-space: nowrap; flex: none; }
+.toolbar button, .toolbar select { white-space: nowrap; }
+.session-tab { display: flex; align-items: center; border: 1px solid var(--line); border-bottom: 0; border-radius: 9px 9px 0 0; background: transparent; flex: none; margin-bottom: -1px; }
+.session-tab[aria-selected="true"] { background: var(--surface); border-top: 2px solid var(--accent); }
+.session-open { display: flex; align-items: center; gap: 7px; border: 0; background: transparent; padding: 5px 4px 5px 10px; font-size: 13px; max-width: 260px; }
+.session-tab[aria-selected="true"] .session-open { font-weight: 600; }
+.session-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-close { border: 0; background: transparent; padding: 5px 7px 5px 3px; color: var(--muted); display: inline-flex; }
+.session-close:hover { color: var(--danger); }
+.session-close svg { width: 14px; height: 14px; }
+.session-tab .ping { padding: 1px 6px; font-size: 11px; }
